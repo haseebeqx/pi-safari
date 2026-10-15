@@ -5,7 +5,7 @@ Safari browsing and automation tools for [Pi](https://github.com/badlogic/pi-mon
 ## Install and set up
 
 > [!NOTE]
-> Already have an MCP-capable client? See [Use Safari MCP directly (without this extension)](#use-safari-mcp-directly-without-this-extension).
+> Already have an MCP-capable client? [You can also use Safari MCP directly without this extension](#use-safari-mcp-directly-without-this-extension).
 
 Requires **macOS, Safari 27+, Node 22.19+, and Pi**.
 
