@@ -49,5 +49,5 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Validate
         run: npm run check
-      - name: Publish release package
-        run: npm publish --access public --tag latest --registry https://registry.npmjs.org
+      - name: Stage release package for approval
+        run: npm stage publish --access public --tag latest --registry https://registry.npmjs.org
