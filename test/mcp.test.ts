@@ -1,3 +1,4 @@
+import { BACKEND_SCHEMAS } from '../src/backend-schemas.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -33,7 +34,7 @@ test('initializes, discovers required tools, and reuses one local child', async 
     await m.call('list_tabs', {});
     assert.deepEqual(d.calls.map(c => c.method), ['initialize', 'notifications/initialized', 'tools/list', 'tools/call', 'tools/call']);
     assert.equal(d.children.length, 1);
-    await assert.rejects(m.call('page_interactions', {}), /Unsupported/);
+    await assert.rejects(m.call('page_interactions', {}), /capability unavailable/);
   } finally { m.close(); }
 });
 test('platform and pre-cancel checks do not spawn', async () => {
@@ -105,4 +106,39 @@ test('close compatibility rejects mismatched handle schema before browser work',
   const m = new SafariMCP({ spawn: d.fake, platform: 'darwin' });
   await assert.rejects(m.call('close_tab', { handle: 'page-1' }), /Incompatible.*close_tab/);
   assert.equal(d.calls.some(c => c.method === 'tools/call'), false); m.close();
+});
+
+ test('optional tools require verified exact schemas without breaking core tools', async () => {
+  for (const compatible of [true, false]) {
+    const d = driver((m, respond) => {
+      if (m.method === 'initialize') respond({ protocolVersion: '2024-11-05', serverInfo: { name: 'Safari' }, capabilities: { tools: {} } });
+      if (m.method === 'tools/list') respond({ tools: [
+        ...names.map(name => ({ name, ...(name === 'close_tab' ? { inputSchema: { type: 'object', properties: { handle: { type: 'string' } }, required: ['handle'] } } : {}) })),
+        ...Object.entries(BACKEND_SCHEMAS).map(([name, inputSchema]) => ({ name, inputSchema: compatible ? inputSchema : { ...inputSchema, required: ['unknown_field'] } })),
+      ] });
+      if (m.method === 'tools/call') respond({ content: [{ type: 'text', text: 'ok' }] });
+    });
+    const m = new SafariMCP({ spawn: d.fake, platform: 'darwin' });
+    try {
+      await m.call('list_tabs', {});
+      for (const name of Object.keys(BACKEND_SCHEMAS)) {
+        if (compatible) await m.call(name, {});
+        else await assert.rejects(m.call(name, {}), /capability unavailable/);
+      }
+      assert.equal(d.calls.filter(c => c.method === 'tools/call').length, compatible ? 7 : 1);
+      await assert.rejects(m.call('set_viewport_size', {}), /Unsupported/);
+    } finally { m.close(); }
+  }
+});
+
+test('last-moment mutation guard blocks dispatch after startup without breaking connection', async () => {
+  const d = driver(), m = new SafariMCP({ spawn: d.fake, platform: 'darwin' });
+  let checked = 0;
+  try {
+    await assert.rejects(m.call('create_tab', { url: 'https://example.com/' }, undefined, () => { checked++; throw Error('approval revoked'); }), /revoked/);
+    assert.equal(checked, 1);
+    assert.equal(d.calls.some(c => c.method === 'tools/call'), false);
+    await m.call('list_tabs', {});
+    assert.equal(d.children.length, 1);
+  } finally { m.close(); }
 });

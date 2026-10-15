@@ -33,7 +33,7 @@ class Browser implements Transport {
 const target = { targetId: 'page-1', epoch: 'session-1' };
 test('validates URL, selector and bounds before transport calls', async () => {
   for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'https://u:p@example.com']) assert.throws(() => webURL(url));
-  const b = new Browser(), s = new Safari(b);
+  const b = new Browser(), s = new Safari(b, () => {});
   assert.throws(() => s.open('file:///tmp/x'));
   assert.throws(() => s.read(target, 12001, 0));
   assert.throws(() => s.read(target, 1, 41));
@@ -43,17 +43,17 @@ test('validates URL, selector and bounds before transport calls', async () => {
 });
 test('tabs return bounded explicit handles with session epoch', async () => {
   const b = new Browser(); b.tabs = Array.from({ length: 110 }, (_, i) => ({ handle: `page-${i}`, url: 'https://example.com/' }));
-  const listed = await new Safari(b).tabs();
+  const listed = await new Safari(b, () => {}).tabs();
   assert.equal(listed.tabs.length, 100); assert.equal(listed.truncated, true);
   assert.deepEqual(listed.tabs[0], { targetId: 'page-0', epoch: 'session-1', url: 'https://example.com/' });
 });
 test('reads fixed JS after explicit selection and preserves truncation', async () => {
-  const b = new Browser(); const data = await new Safari(b).read(target, 3, 0);
+  const b = new Browser(); const data = await new Safari(b, () => {}).read(target, 3, 0);
   assert.equal(data.text, 'abc'); assert.equal(data.textTruncated, true);
   assert.deepEqual(b.calls.map(c => c.name), ['list_tabs', 'switch_tab', 'page_info', 'evaluate_javascript', 'page_info', 'list_tabs']);
 });
 test('rejects malformed, disconnected, missing and reconnected targets', async () => {
-  const b = new Browser(), s = new Safari(b);
+  const b = new Browser(), s = new Safari(b, () => {});
   await assert.rejects(s.read({ targetId: 1 } as any), /Invalid/);
   await assert.rejects(s.read({ ...target, epoch: 'old' }), /stale/);
   await assert.rejects(s.read({ ...target, targetId: 'missing' }), /closed/);
@@ -63,34 +63,34 @@ test('rejects malformed, disconnected, missing and reconnected targets', async (
   assert.equal(b.calls.filter(c => c.name === 'switch_tab').length, 0);
 });
 test('open uses returned handle and rejects redirects without retrying creation', async () => {
-  const b = new Browser(); const opened = await new Safari(b).open('https://example.com');
+  const b = new Browser(); const opened = await new Safari(b, () => {}).open('https://example.com');
   assert.equal(opened.targetId, 'page-2');
   assert.equal(b.calls.filter(c => c.name === 'create_tab').length, 1);
   const redirected = new Browser(), call = redirected.call.bind(redirected);
   redirected.call = async (name, args) => { const r = await call(name, args); if (name === 'create_tab') redirected.url = 'https://other.example/'; return r; };
-  await assert.rejects(new Safari(redirected).open('https://example.com/'), /Redirect/);
+  await assert.rejects(new Safari(redirected, () => {}).open('https://example.com/'), /Redirect/);
   assert.equal(redirected.calls.filter(c => c.name === 'create_tab').length, 1);
 });
 test('link following opens only validated extracted URLs and never navigates source', async () => {
   for (const href of ['javascript:alert(1)', 'https://u:p@example.com', undefined]) {
     const b = new Browser(); b.result = JSON.stringify({ href });
-    await assert.rejects(new Safari(b).followLink(target, 'a', 'https://example.com/'));
+    await assert.rejects(new Safari(b, () => {}).followLink(target, 'a', 'https://example.com/'));
     assert.equal(b.calls.filter(c => c.name === 'create_tab').length, 0);
   }
   const b = new Browser(), call = b.call.bind(b);
   b.call = async (name, args) => name === 'evaluate_javascript' && String(args.expression).includes('querySelectorAll') ? reply(JSON.stringify({ href: 'https://destination.example/' })) : call(name, args);
-  assert.equal((await new Safari(b).followLink(target, 'a', 'https://example.com/')).targetId, 'page-2');
+  assert.equal((await new Safari(b, () => {}).followLink(target, 'a', 'https://example.com/')).targetId, 'page-2');
   assert.equal(b.calls.filter(c => c.name === 'create_tab').length, 1);
   assert.equal(b.calls.some(c => ['navigate_to_url', 'page_interactions', 'close_tab'].includes(c.name)), false);
 });
 test('navigation during observation fails before follow creates a tab', async () => {
   const b = new Browser(), call = b.call.bind(b); b.result = JSON.stringify({ href: 'https://destination.example/' });
   b.call = async (name, args) => { const r = await call(name, args); if (name === 'evaluate_javascript') b.url = 'https://changed.example/'; return r; };
-  await assert.rejects(new Safari(b).followLink(target, 'a', 'https://example.com/'), /changed/);
+  await assert.rejects(new Safari(b, () => {}).followLink(target, 'a', 'https://example.com/'), /changed/);
   assert.equal(b.calls.some(c => c.name === 'create_tab'), false);
 });
 test('operations serialize, cancelled queued work does not execute, queue recovers', async () => {
-  const b = new Browser(), s = new Safari(b), controller = new AbortController();
+  const b = new Browser(), s = new Safari(b, () => {}), controller = new AbortController();
   const gate = s.serial(async () => new Promise(r => setTimeout(r, 5)));
   const cancelled = s.tabs(controller.signal); controller.abort();
   const next = s.tabs(); await gate; await assert.rejects(cancelled, /cancelled/); await next;
@@ -123,4 +123,13 @@ test('close uses explicit handle without switching, rejects stale and handles ab
   assert.deepEqual(b.calls.at(-1), { name: 'close_tab', args: { handle: 'page-1' } });
   assert.equal(b.calls.some(c => c.name === 'switch_tab'), false);
   await assert.rejects(s.closeTab(target, AbortSignal.abort()), /cancelled/);
+});
+
+
+test('new-tab reading is permission-free without enabling arbitrary tab mutations', async () => {
+  const b = new Browser(), s = new Safari(b);
+  await s.open('https://example.com/');
+  const before = b.calls.length;
+  await assert.rejects(s.activate(target), /approval/);
+  assert.equal(b.calls.length, before);
 });

@@ -1,3 +1,4 @@
+import { BACKEND_SCHEMAS, schemaKey } from './backend-schemas.ts';
 import { VERSION } from './version.ts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -5,12 +6,13 @@ export const TRANSPORT_LIMIT = 256 * 1024;
 export interface ToolReply { content: { type: string; text?: string }[]; isError?: boolean }
 export interface Transport {
   readonly epoch: string;
-  call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolReply>;
+  call(name: string, args: Record<string, unknown>, signal?: AbortSignal, beforeSend?: () => void): Promise<ToolReply>;
   close(): void;
 }
 const REQUIRED = ['list_tabs', 'create_tab', 'switch_tab', 'evaluate_javascript', 'page_info', 'close_tab'];
 export class SafariMCP implements Transport {
   epoch = randomUUID();
+  private supported = new Set<string>();
   private child?: ChildProcessWithoutNullStreams;
   private starting?: Promise<void>;
   private nextId = 0;
@@ -22,6 +24,7 @@ export class SafariMCP implements Transport {
   private options: { spawn?: typeof spawn; platform?: string; timeout?: number };
   private stop(error = Error('Safari connection closed; relist tabs. Inspect tabs before retrying an open.')) {
     const child = this.child; this.child = undefined; this.starting = undefined;
+    this.supported.clear();
     clearTimeout(this.idle); this.buffer = Buffer.alloc(0); this.epoch = randomUUID();
     for (const p of this.pending.values()) p.reject(error); this.pending.clear();
     child?.kill('SIGTERM');
@@ -67,6 +70,9 @@ export class SafariMCP implements Transport {
       this.write({ jsonrpc: '2.0', method: 'notifications/initialized' });
       const tools = await this.rpc('tools/list', {});
       if (!Array.isArray(tools?.tools) || REQUIRED.some(name => !tools.tools.some((t: { name: string }) => t.name === name))) throw Error('Safari MCP is missing required tools; update Safari.');
+      for (const [name, schema] of Object.entries(BACKEND_SCHEMAS)) {
+        if (schemaKey(tools.tools.find((t: any) => t.name === name)?.inputSchema) === schemaKey(schema)) this.supported.add(name);
+      }
       const close = tools.tools.find((t: any) => t.name === 'close_tab')?.inputSchema;
       if (close?.type !== 'object' || close.properties?.handle?.type !== 'string' || !Array.isArray(close.required) || !close.required.includes('handle') || close.required.some((key: string) => key !== 'handle')) throw Error('Incompatible Safari close_tab schema.');
     })();
@@ -81,8 +87,8 @@ export class SafariMCP implements Transport {
     const id = ++this.nextId;
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.write({ jsonrpc: '2.0', id, method, params }); } catch (e) { this.pending.delete(id); reject(e); } });
   }
-  call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolReply> {
-    if (!REQUIRED.includes(name)) return Promise.reject(Error('Unsupported internal Safari operation.'));
+  call(name: string, args: Record<string, unknown>, signal?: AbortSignal, beforeSend?: () => void): Promise<ToolReply> {
+    if (!REQUIRED.includes(name) && !Object.hasOwn(BACKEND_SCHEMAS, name)) return Promise.reject(Error('Unsupported internal Safari operation.'));
     const next = this.queue.then(async () => {
       if (signal?.aborted) throw Error('Safari operation cancelled.');
       clearTimeout(this.idle);
@@ -91,6 +97,8 @@ export class SafariMCP implements Transport {
       signal?.addEventListener('abort', abort, { once: true });
       try {
         await this.start();
+        if (!REQUIRED.includes(name) && !this.supported.has(name)) throw Error('Safari capability unavailable or incompatible schema; update Safari.');
+        beforeSend?.(); // Recheck session authorization/epoch after connection startup, immediately before dispatch.
         const reply = await this.rpc('tools/call', { name, arguments: args });
         if (!reply || !Array.isArray(reply.content) || reply.content.some((c: any) => c?.type !== 'text' || typeof c.text !== 'string')) throw Error('Invalid Safari tool result.');
         if (reply.isError) throw Error('Safari operation failed. Check remote automation permission and relist tabs; inspect before retrying an open.');

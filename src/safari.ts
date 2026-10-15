@@ -1,16 +1,27 @@
+import { queryJS, waitJS, type Query } from './inspection.ts';
 import { searchRequest, searchJS, validateSearch, type SearchOptions } from './search.ts';
 import { SafariMCP, toolJSON, type Transport } from './mcp.ts';
 import { bound, webURL, readJS, linkJS, readyJS } from './extraction.ts';
 export interface Target { targetId: string; epoch: string }
 const HANDLE = /^[A-Za-z0-9_-]{1,200}$/;
 export class Safari {
+  private generation = 0;
+  private observed = new Map<string, { epoch: string; url: string; text: string }>();
+  /** Cached observation only: no permission-time browser probes. Untrusted, potentially stale evidence. */
+  permissionContext(t: Target, url: string) {
+    const data = this.observed.get(t.targetId);
+    return data?.epoch === t.epoch && data.url === url ? data : undefined;
+  }
   private queue: Promise<unknown> = Promise.resolve();
   private transport: Transport;
-  constructor(transport: Transport = new SafariMCP()) { this.transport = transport; }
-  close() { this.transport.close(); }
+  private authorize: () => void;
+  constructor(transport: Transport = new SafariMCP(), authorize: () => void = () => { throw Error('Safari mutation requires explicit session approval.'); }) { this.transport = transport; this.authorize = authorize; }
+  close() { this.observed.clear(); this.generation++; this.transport.close(); }
   serial<T>(fn: () => Promise<T>): Promise<T> { const next = this.queue.then(fn); this.queue = next.catch(() => {}); return next; }
   private operation<T>(fn: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const generation = this.generation;
     return this.serial(async () => {
+      if (generation !== this.generation) throw Error('Safari session changed; queued operation cancelled.');
       if (signal?.aborted) throw Error('Safari operation cancelled.');
       const deadline = AbortSignal.timeout(20000);
       const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -21,6 +32,14 @@ export class Safari {
     if (signal.aborted) throw Error('Safari deadline/cancellation; inspect tabs before retrying an open.');
     return toolJSON(await this.transport.call(name, args, signal));
   }
+  private mutate(name: string, args: Record<string, unknown>, signal: AbortSignal, infrastructure = false) {
+    if (!infrastructure) this.authorize();
+    const epoch = this.transport.epoch;
+    return this.transport.call(name, args, signal, () => {
+      if (!infrastructure) this.authorize();
+      if (epoch !== this.transport.epoch) throw Error('Safari connection changed before action; relist targets. Action not replayed.');
+    });
+  }
   private async list(signal: AbortSignal): Promise<{ handle: string; url?: string; title?: string }[]> {
     const tabs = await this.call('list_tabs', {}, signal);
     if (!Array.isArray(tabs) || tabs.some(t => !t || typeof t.handle !== 'string' || !HANDLE.test(t.handle) || (t.url !== undefined && typeof t.url !== 'string') || (t.title !== undefined && typeof t.title !== 'string')) || new Set(tabs.map(t => t.handle)).size !== tabs.length) throw Error('Invalid Safari tab list.');
@@ -29,13 +48,14 @@ export class Safari {
   private target(t: Target) {
     if (typeof t?.targetId !== 'string' || !HANDLE.test(t.targetId) || typeof t.epoch !== 'string' || t.epoch !== this.transport.epoch) throw Error('Invalid or stale Safari target; use targetId and epoch from safari_tabs/open.');
   }
-  private async select(t: Target, signal: AbortSignal) {
+  private async select(t: Target, signal: AbortSignal, approval = false) {
     this.target(t);
     if (!(await this.list(signal)).some(tab => tab.handle === t.targetId)) throw Error('Safari target closed or unavailable; relist tabs.');
     this.target(t); // A reconnect invalidates the old epoch even if a handle is reused.
     // Safari returns a plain-text acknowledgement for switch_tab.
     // The transport still validates its envelope and isError flag.
-    await this.transport.call('switch_tab', { handle: t.targetId }, signal);
+    if (approval) this.authorize();
+    await (approval ? this.mutate('switch_tab', { handle: t.targetId }, signal) : this.transport.call('switch_tab', { handle: t.targetId }, signal));
     this.target(t);
   }
   private async closeTarget(t: Target, signal: AbortSignal) {
@@ -45,7 +65,7 @@ export class Safari {
     if (!exists) return { status: 'already-absent' as const };
     if (signal.aborted) throw Error('Safari close cancelled.');
     // Apple's close_tab takes a handle and returns an acknowledgement, not JSON.
-    await this.transport.call('close_tab', { handle: t.targetId }, signal);
+    await this.mutate('close_tab', { handle: t.targetId }, signal, true);
     this.target(t);
     return { status: 'closed' as const };
   }
@@ -75,9 +95,10 @@ export class Safari {
     }, signal);
   }
   private async create(url: string, signal: AbortSignal, identified?: (t: Target) => void) {
+    // New-tab read infrastructure only; never exposes arbitrary close/navigation/interaction.
     const normalized = webURL(url);
     const epoch = this.transport.epoch;
-    const created = await this.call('create_tab', { url: normalized }, signal);
+    const created = toolJSON(await this.mutate('create_tab', { url: normalized }, signal, true));
     if (typeof created?.handle !== 'string' || !HANDLE.test(created.handle)) throw Error('Cannot identify created tab; inspect tabs before retrying.');
     const t = { targetId: created.handle, epoch };
     identified?.(t);
@@ -112,6 +133,107 @@ export class Safari {
     if (before.url !== after?.url || !(await this.list(signal)).some(tab => tab.handle === t.targetId && tab.url === before.url)) throw Error('Page changed during extraction; read again.');
     this.target(t); bound(data);
     return { data, url: before.url };
+  }
+  private async atURL(t: Target, expectedUrl: string, signal: AbortSignal) {
+    await this.select(t, signal);
+    const info = await this.call('page_info', {}, signal);
+    if (info?.url !== expectedUrl) throw Error('Source URL changed; read again.');
+    this.target(t);
+  }
+  private async checkedBackend(t: Target, name: string, args: Record<string, unknown>, signal: AbortSignal) {
+    await this.select(t, signal);
+    const before = await this.call('page_info', {}, signal);
+    webURL(before?.url);
+    const reply = await this.transport.call(name, args, signal);
+    const after = await this.call('page_info', {}, signal);
+    this.target(t);
+    if (before.url !== after?.url || !(await this.list(signal)).some(tab => tab.handle === t.targetId && tab.url === before.url)) throw Error('Page changed during observation; read again.');
+    this.target(t);
+    const text = reply.content.map(c => c.text ?? '').join('\n');
+    // Backend text may be a native tree, JSON, or an artifact path. Never interpret it as a local file instruction.
+    const data = { ...t, url: before.url, text: text.slice(0, 12000), truncated: text.length > 12000,
+      note: 'Untrusted backend output; URL checks only, not document identity. Artifact paths are not read automatically.' };
+    if (name === 'get_page_content') {
+      // Keep only a bounded latest snapshot per tab. No disk/artifact reads.
+      if (this.observed.size >= 100) this.observed.delete(this.observed.keys().next().value!);
+      this.observed.set(t.targetId, { epoch: t.epoch, url: before.url, text: data.text });
+    }
+    bound(data); return data;
+  }
+  activate(t: Target, signal?: AbortSignal) {
+    return this.operation(async s => { this.authorize(); await this.select(t, s, true); return { ...t, status: 'selected' }; }, signal);
+  }
+  snapshot(t: Target, entirePage = false, signal?: AbortSignal) {
+    return this.operation(s => this.checkedBackend(t, 'get_page_content', {
+      format: 'textTree', region: entirePage ? 'entire_page' : 'viewport', nodeIds: 'interactive',
+      includeAccessibilityAttributes: true, includeURLs: true, includeSubframes: false,
+      includeRects: true, maxWordsPerParagraph: 30,
+    }, s), signal);
+  }
+  find(t: Target, query: Query, inspect = false, signal?: AbortSignal) {
+    const expression = queryJS(query, inspect);
+    return this.operation(async s => {
+      const { data, url } = await this.observe(t, expression, s);
+      if (!data || !Array.isArray(data.matches) || data.matches.length > (inspect ? 1 : query.limit ?? 20) || typeof data.truncated !== 'boolean') throw Error('Invalid Safari query result.');
+      return { ...data, ...t, url, note: 'Live DOM descriptors, not stable references or accessibility tree. Main frame only; 2000-element scan bound.' };
+    }, signal);
+  }
+  wait(t: Target, expectedUrl: string, query: Query, timeoutMs = 5000, signal?: AbortSignal) {
+    const expression = waitJS(query, expectedUrl);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 10000) throw Error('timeoutMs must be 0..10000.');
+    return this.operation(async s => {
+      const until = Date.now() + timeoutMs;
+      while (true) {
+        const { data, url } = await this.observe(t, expression, s);
+        if (url !== expectedUrl || typeof data?.matched !== 'boolean') throw Error('Invalid Safari wait result.');
+        if (data.matched) return { ...t, url, matched: true };
+        if (Date.now() >= until) throw Error('Safari wait timed out; no visible match within scan bound.');
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => { clearTimeout(timer); reject(Error('Safari wait cancelled.')); };
+          const timer = setTimeout(() => { s.removeEventListener('abort', abort); resolve(); }, Math.min(200, until - Date.now()));
+          s.addEventListener('abort', abort, { once: true }); if (s.aborted) abort();
+        });
+      }
+    }, signal);
+  }
+  screenshot(t: Target, fullPage = false, signal?: AbortSignal) {
+    return this.operation(s => this.checkedBackend(t, 'screenshot', { full_page: fullPage }, s), signal);
+  }
+  console(t: Target, limit = 100, signal?: AbortSignal) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw Error('limit must be 1..100.');
+    return this.operation(s => this.checkedBackend(t, 'browser_console_messages', { tab_handle: t.targetId, clear: false, limit }, s), signal);
+  }
+  network(t: Target, urlSubstring = '', signal?: AbortSignal) {
+    if (typeof urlSubstring !== 'string' || urlSubstring.length > 500) throw Error('urlSubstring must be at most 500 characters.');
+    return this.operation(s => this.checkedBackend(t, 'list_network_requests', { tab_handle: t.targetId, clear: false, filter: { url_substring: urlSubstring } }, s), signal);
+  }
+  navigate(t: Target, expectedUrl: string, url: string, signal?: AbortSignal) {
+    webURL(expectedUrl); const destination = webURL(url);
+    return this.operation(async s => {
+      this.authorize(); await this.atURL(t, expectedUrl, s); this.authorize();
+      this.observed.delete(t.targetId);
+      await this.mutate('navigate_to_url', { tab_uuid: t.targetId, url: destination }, s);
+      this.target(t);
+      const info = await this.call('page_info', {}, s);
+      if (info?.url !== destination) throw Error('Navigation changed URL or redirected; navigation may already have occurred. Inspect tabs; do not replay.');
+      if (!(await this.list(s)).some(tab => tab.handle === t.targetId && tab.url === destination)) throw Error('Navigation target changed; inspect tabs, do not replay.');
+      this.target(t); return { ...t, url: destination, note: 'Navigation sent once. URL checks only, not document identity.' };
+    }, signal);
+  }
+  interact(t: Target, expectedUrl: string, action: Interaction, signal?: AbortSignal) {
+    webURL(expectedUrl); validateInteraction(action);
+    return this.operation(async s => {
+      const permissionFree = action.type === 'scroll';
+      if (!permissionFree) this.authorize();
+      await this.atURL(t, expectedUrl, s);
+      if (!permissionFree) this.authorize();
+      // Exactly one action per call. Never retry after a timeout or navigation.
+      await this.mutate('page_interactions', { interactions: [action] }, s, permissionFree);
+      const info = await this.call('page_info', {}, s); this.target(t);
+      if (typeof info?.url !== 'string' || !(await this.list(s)).some(tab => tab.handle === t.targetId && tab.url === info.url)) throw Error('Interaction context changed; inspect tabs, do not replay.');
+      this.target(t);
+      return { ...t, url: info.url.slice(0, 8192), note: 'Action sent once; may navigate or submit. Inspect before any retry. UID can be stale even at the same URL.' };
+    }, signal);
   }
   read(t: Target, chars = 8000, links = 20, signal?: AbortSignal) {
     const expression = readJS(chars, links);
@@ -160,4 +282,24 @@ export class Safari {
       return this.create(webURL(data.href), s);
     }, signal);
   }
+}
+
+export interface Interaction {
+  type: 'click' | 'type' | 'keyPress' | 'scroll' | 'hover';
+  purpose: string;
+  node?: string;
+  value?: string;
+  replaceAll?: boolean;
+  scrollDelta?: { x: number; y: number };
+}
+export function validateInteraction(a: Interaction) {
+  if (!a || !['click', 'type', 'keyPress', 'scroll', 'hover'].includes(a.type) || typeof a.purpose !== 'string' || !a.purpose.length || a.purpose.length > 300) throw Error('Invalid interaction type or purpose.');
+  if (Object.keys(a).some(k => !['type','purpose','node','value','replaceAll','scrollDelta'].includes(k))) throw Error('Unknown interaction field.');
+  if (a.node !== undefined && (typeof a.node !== 'string' || !/^[0-9]{1,20}$/.test(a.node))) throw Error('node must be a numeric UID from safari_snapshot.');
+  if (['click','type','hover'].includes(a.type) && !a.node) throw Error('This action requires a snapshot node UID.');
+  if (['type','keyPress'].includes(a.type) && (typeof a.value !== 'string' || a.value.length > 4000 || (a.type === 'keyPress' && (!a.value.length || a.value.length > 100)))) throw Error('Invalid interaction value.');
+  if (a.value !== undefined && !['type','keyPress'].includes(a.type)) throw Error('value only applies to type/keyPress.');
+  if (a.replaceAll !== undefined && (a.type !== 'type' || typeof a.replaceAll !== 'boolean')) throw Error('replaceAll only applies to type.');
+  if (a.scrollDelta !== undefined && (a.type !== 'scroll' || !a.scrollDelta || Object.keys(a.scrollDelta).some(k => !['x','y'].includes(k)) || ![a.scrollDelta.x,a.scrollDelta.y].every(n => Number.isFinite(n) && Math.abs(n) <= 10000))) throw Error('Invalid scroll delta.');
+  if (a.type === 'scroll' && !a.scrollDelta) throw Error('scroll requires scrollDelta.');
 }

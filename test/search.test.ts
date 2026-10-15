@@ -66,7 +66,7 @@ class SearchBrowser implements Transport {
   close() {}
 }
 test('search performs one new-tab operation and preserves fail-closed identity/no-replay', async () => {
-  const browser = new SearchBrowser(); const safari = new Safari(browser);
+  const browser = new SearchBrowser(); const safari = new Safari(browser); // No action permission, including own-tab cleanup.
   const data = await safari.search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 });
   assert.equal(data.results.length, 1); assert.equal('targetId' in data, false); assert.equal('epoch' in data, false); assert.equal(data.cleanup.status, 'closed');
   assert.equal(browser.calls.at(-1), 'close_tab');
@@ -74,13 +74,13 @@ test('search performs one new-tab operation and preserves fail-closed identity/n
   assert.ok(browser.calls.every(n => ['create_tab', 'list_tabs', 'switch_tab', 'page_info', 'evaluate_javascript', 'close_tab'].includes(n)));
   for (const flag of ['redirect', 'changed', 'malformed'] as const) {
     const b = new SearchBrowser(); b[flag] = true;
-    await assert.rejects(new Safari(b).search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 }));
+    await assert.rejects(new Safari(b, () => {}).search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 }));
     assert.equal(b.calls.filter(n => n === 'create_tab').length, 1);
     assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
   }
 });
 test('search validates before transport, honors queued cancellation, and recovers queue', async () => {
-  const b = new SearchBrowser(), s = new Safari(b), c = new AbortController();
+  const b = new SearchBrowser(), s = new Safari(b, () => {}), c = new AbortController();
   assert.throws(() => s.search({ query: '', maxResults: 10 })); assert.equal(b.calls.length, 0);
   const gate = s.serial(async () => new Promise(r => setTimeout(r, 5)));
   const pending = s.search({ query: 'x' }, c.signal); c.abort();
@@ -92,7 +92,7 @@ test('search cleanup preserves primary extraction failure when close fails', asy
   const b = new SearchBrowser(); b.malformed = true;
   const call = b.call.bind(b);
   b.call = async (name, args) => { if (name === 'close_tab') { b.calls.push(name); throw Error('close failure'); } return call(name, args); };
-  await assert.rejects(new Safari(b).search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 }), (e: any) => {
+  await assert.rejects(new Safari(b, () => {}).search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 }), (e: any) => {
     assert.match(e.message, /Invalid Safari search result.*cleanup: failed/); assert.match(e.cause.message, /Invalid Safari search result/); return true;
   });
   assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
@@ -106,20 +106,32 @@ test('search cancellation cleans known tab only while epoch remains current', as
       return r;
     };
     // A transport that retires during create must not bind a new epoch to its reply.
-    await assert.rejects(new Safari(b).search({ query: 'x' }, c.signal), retire ? /stale.*skipped-retired-epoch/ : /cancel/);
+    await assert.rejects(new Safari(b, () => {}).search({ query: 'x' }, c.signal), retire ? /stale.*skipped-retired-epoch/ : /cancel/);
     assert.equal(b.calls.filter(n => n === 'close_tab').length, retire ? 0 : 1);
   }
 });
 test('unknown create outcome is not retried or closed', async () => {
   const b = new SearchBrowser(), call = b.call.bind(b);
   b.call = async (name, args) => { if (name === 'create_tab') { b.calls.push(name); throw Error('create lost'); } return call(name, args); };
-  await assert.rejects(new Safari(b).search({ query: 'x' }), /create lost.*unidentified/);
+  await assert.rejects(new Safari(b, () => {}).search({ query: 'x' }), /create lost.*unidentified/);
   assert.deepEqual(b.calls, ['create_tab']);
 });
 
 test('cancellation during bounded cleanup does not cancel cleanup or return success', async () => {
   const b = new SearchBrowser(), c = new AbortController(), call = b.call.bind(b);
   b.call = async (name, args) => { if (name === 'close_tab') c.abort(); return call(name, args); };
-  await assert.rejects(new Safari(b).search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 }, c.signal), /cancelled.*cleanup: closed/);
+  await assert.rejects(new Safari(b, () => {}).search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 }, c.signal), /cancelled.*cleanup: closed/);
   assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
+});
+
+
+test('permission-free search infrastructure does not authorize restricted target actions', async () => {
+  const b = new SearchBrowser(), s = new Safari(b);
+  await s.search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 });
+  const before = b.calls.length;
+  const t = { targetId: 'new', epoch: 'test' };
+  await assert.rejects(s.activate(t), /approval/);
+  await assert.rejects(s.navigate(t, b.url, 'https://example.com/'), /approval/);
+  await assert.rejects(s.interact(t, b.url, { type: 'click', node: '1', purpose: 'unrequested' }), /approval/);
+  assert.equal(b.calls.length, before);
 });
