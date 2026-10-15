@@ -1,0 +1,53 @@
+name: Publish npm release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const tag = process.env.RELEASE_TAG;
+          if (tag !== version && tag !== `v${version}`) {
+            throw new Error('Release tag must match package.json version (optional v prefix).');
+          }
+          if (version.includes('-')) {
+            throw new Error('Stable releases must not publish a prerelease package version.');
+          }
+          NODE
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Validate
+        run: npm run check
+      - name: Publish release package
+        run: npm publish --access public --tag latest --registry https://registry.npmjs.org
