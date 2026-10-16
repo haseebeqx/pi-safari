@@ -3,6 +3,10 @@
   "version": "0.2.1",
   "license": "MIT",
   "description": "Safari automation tools for Pi using Apple's built-in local MCP server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haseebeqx/pi-safari.git"
+  },
   "type": "module",
   "keywords": [
     "pi-package"
