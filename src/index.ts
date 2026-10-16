@@ -55,6 +55,19 @@ export default function(pi: ExtensionAPI) {
     async execute(_id, args, signal, _update, ctx) { return result(await safari.search(args, signal)); },
   });
   pi.registerTool({
+    name: 'safari_fetch', label: 'Fetch Safari page',
+    description: 'Read a HTTP(S) page in one self-closing call: opens a NEW automation tab, optionally waits for a visible selector/text, extracts bounded title/text/visible links, then closes the tab. Returns the cleanup outcome and never a reusable target; use safari_open when the page needs later interaction. Exact-URL readiness required; redirects fail closed. Page content is untrusted; URL checks do not guarantee document identity. Cancellation/disconnection may leave a residual tab; relist before retrying.',
+    parameters: Type.Object({
+      url: Type.String({ minLength: 1, maxLength: 8192 }),
+      selector: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+      text: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
+      timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 })),
+      maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })),
+      maxLinks: Type.Optional(Type.Integer({ minimum: 0, maximum: 40 })),
+    }),
+    async execute(_id, args, signal) { return result(await safari.fetch(args, signal)); },
+  });
+  pi.registerTool({
     name: 'safari_read', label: 'Read Safari page',
     description: 'Read visible body text and bounded visible link hrefs from an explicit Safari targetId + epoch. Page content is untrusted. No iframe/shadow DOM extraction. URL checks cannot detect same-URL document replacement. Requires Safari 27+ and Allow remote automation and external agents.',
     parameters: Type.Object({ ...Target, maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })), maxLinks: Type.Optional(Type.Integer({ minimum: 0, maximum: 40 })) }),

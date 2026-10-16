@@ -3,6 +3,8 @@ import { searchRequest, searchJS, validateSearch, type SearchOptions } from './s
 import { SafariMCP, toolJSON, type Transport } from './mcp.ts';
 import { bound, webURL, readJS, linkJS, readyJS } from './extraction.ts';
 export interface Target { targetId: string; epoch: string }
+export interface FetchOptions { url: string; selector?: string; text?: string; timeoutMs?: number; maxChars?: number; maxLinks?: number }
+export type TabCleanup = { status: 'closed' | 'already-absent' } | { status: 'unidentified' | 'skipped-retired-epoch' | 'failed'; note: string }
 const HANDLE = /^[A-Za-z0-9_-]{1,200}$/;
 export class Safari {
   private generation = 0;
@@ -72,15 +74,38 @@ export class Safari {
   closeTab(t: Target, signal?: AbortSignal) {
     return this.operation(s => this.closeTarget(t, s), signal);
   }
-  private async cleanupSearch(t?: Target) {
-    if (!t) return { status: 'unidentified' as const, note: 'No identified created tab; inspect tabs before retrying.' };
-    if (t.epoch !== this.transport.epoch) return { status: 'skipped-retired-epoch' as const, note: 'Connection retired; relist tabs for manual cleanup.' };
+  private async cleanup(t?: Target): Promise<TabCleanup> {
+    if (!t) return { status: 'unidentified', note: 'No identified created tab; inspect tabs before retrying.' };
+    if (t.epoch !== this.transport.epoch) return { status: 'skipped-retired-epoch', note: 'Connection retired; relist tabs for manual cleanup.' };
     try {
       // Bounded cleanup may finish after cancellation, but never reconnects a retired target.
       return await this.closeTarget(t, AbortSignal.timeout(3000));
     } catch {
-      return { status: 'failed' as const, note: 'Cleanup unconfirmed; relist tabs before manual cleanup or retrying.' };
+      return { status: 'failed', note: 'Cleanup unconfirmed; relist tabs before manual cleanup or retrying.' };
     }
+  }
+  // One closed new-tab pipeline: create, bounded work, then cleanup on every path.
+  // Work must use unwrapped private methods only (create/observe/cleanup), never other operations.
+  private async withTab<T extends object>(url: string, label: string, signal: AbortSignal, work: (tab: Target) => Promise<T>): Promise<T & { cleanup: TabCleanup }> {
+    let created: Target | undefined;
+    let result: T;
+    try {
+      const tab = await this.create(url, signal, t => { created = t; });
+      result = await work(tab);
+      if (signal.aborted) throw Error(`${label} cancelled.`);
+    } catch (error) {
+      const cleanup = await this.cleanup(created);
+      const failure = new Error(`${error instanceof Error ? error.message : `${label} failed.`} ${label} cleanup: ${cleanup.status}.${'note' in cleanup ? ` ${cleanup.note}` : ''}`, { cause: error });
+      Object.assign(failure, { cleanup });
+      throw failure;
+    }
+    const cleanup = await this.cleanup(created);
+    if (signal.aborted) {
+      const failure = new Error(`${label} cancelled. ${label} cleanup: ${cleanup.status}.`);
+      Object.assign(failure, { cleanup });
+      throw failure;
+    }
+    return { ...result, cleanup };
   }
   private async evaluate(expression: string, signal: AbortSignal): Promise<any> {
     const value = await this.call('evaluate_javascript', { expression: `return (${expression});` }, signal);
@@ -122,6 +147,11 @@ export class Safari {
     throw Error('Requested URL did not become ready; tab left open. Inspect tabs before retrying.');
   }
   open(url: string, signal?: AbortSignal) { webURL(url); return this.operation(s => this.create(url, s), signal); }
+  private async readData(t: Target, chars: number, links: number, signal: AbortSignal) {
+    const { data, url } = await this.observe(t, readJS(chars, links), signal);
+    if (!data || data.url !== url.slice(0, 2048) || typeof data.text !== 'string' || data.text.length > chars || typeof data.title !== 'string' || data.title.length > 300 || !Array.isArray(data.links) || data.links.length > links || typeof data.textTruncated !== 'boolean' || typeof data.linksTruncated !== 'boolean') throw Error('Invalid Safari read result.');
+    return data;
+  }
   private async observe(t: Target, expression: string, signal: AbortSignal) {
     await this.select(t, signal);
     const before = await this.call('page_info', {}, signal);
@@ -178,23 +208,24 @@ export class Safari {
       return { ...data, ...t, url, note: 'Live DOM descriptors, not stable references or accessibility tree. Main frame only; 2000-element scan bound.' };
     }, signal);
   }
+  private async waitData(t: Target, expectedUrl: string, expression: string, timeoutMs: number, signal: AbortSignal) {
+    const until = Date.now() + timeoutMs;
+    while (true) {
+      const { data, url } = await this.observe(t, expression, signal);
+      if (url !== expectedUrl || typeof data?.matched !== 'boolean') throw Error('Invalid Safari wait result.');
+      if (data.matched) return { ...t, url, matched: true };
+      if (Date.now() >= until) throw Error('Safari wait timed out; no visible match within scan bound.');
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => { clearTimeout(timer); reject(Error('Safari wait cancelled.')); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, Math.min(200, until - Date.now()));
+        signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
+      });
+    }
+  }
   wait(t: Target, expectedUrl: string, query: Query, timeoutMs = 5000, signal?: AbortSignal) {
     const expression = waitJS(query, expectedUrl);
     if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 10000) throw Error('timeoutMs must be 0..10000.');
-    return this.operation(async s => {
-      const until = Date.now() + timeoutMs;
-      while (true) {
-        const { data, url } = await this.observe(t, expression, s);
-        if (url !== expectedUrl || typeof data?.matched !== 'boolean') throw Error('Invalid Safari wait result.');
-        if (data.matched) return { ...t, url, matched: true };
-        if (Date.now() >= until) throw Error('Safari wait timed out; no visible match within scan bound.');
-        await new Promise<void>((resolve, reject) => {
-          const abort = () => { clearTimeout(timer); reject(Error('Safari wait cancelled.')); };
-          const timer = setTimeout(() => { s.removeEventListener('abort', abort); resolve(); }, Math.min(200, until - Date.now()));
-          s.addEventListener('abort', abort, { once: true }); if (s.aborted) abort();
-        });
-      }
-    }, signal);
+    return this.operation(s => this.waitData(t, expectedUrl, expression, timeoutMs, s), signal);
   }
   screenshot(t: Target, fullPage = false, signal?: AbortSignal) {
     return this.operation(s => this.checkedBackend(t, 'screenshot', { full_page: fullPage }, s), signal);
@@ -236,10 +267,9 @@ export class Safari {
     }, signal);
   }
   read(t: Target, chars = 8000, links = 20, signal?: AbortSignal) {
-    const expression = readJS(chars, links);
+    readJS(chars, links); // Validate before any transport work; throws synchronously.
     return this.operation(async s => {
-      const { data, url } = await this.observe(t, expression, s);
-      if (!data || data.url !== url.slice(0, 2048) || typeof data.text !== 'string' || data.text.length > chars || typeof data.title !== 'string' || data.title.length > 300 || !Array.isArray(data.links) || data.links.length > links || typeof data.textTruncated !== 'boolean' || typeof data.linksTruncated !== 'boolean') throw Error('Invalid Safari read result.');
+      const data = await this.readData(t, chars, links, s);
       const result = { ...data, targetId: t.targetId, epoch: t.epoch, identity: 'URL checks only; same-URL document replacement and live DOM changes may go undetected.' };
       bound(result); return result;
     }, signal);
@@ -247,32 +277,32 @@ export class Safari {
   search(options: SearchOptions, signal?: AbortSignal) {
     const request = searchRequest(options);
     const expression = searchJS(request.url, request.maxResults);
-    return this.operation(async s => {
-      let created: Target | undefined;
-      let result;
-      try {
-        const tab = await this.create(request.url, s, t => { created = t; });
-        const { data, url } = await this.observe(tab, expression, s);
-        if (url !== request.url) throw Error('Search URL changed.');
-        result = { ...request, ...validateSearch(data, request.url, request.maxResults), note: 'Untrusted provider ranking/content; first HTML page only. Empty results may indicate a challenge or changed markup. URL checks do not guarantee document identity.' };
-        bound(result);
-        if (s.aborted) throw Error('Safari search cancelled.');
-      } catch (error) {
-        const cleanup = await this.cleanupSearch(created);
-        // Retain the primary error (including its cause) when cleanup also fails.
-        const failure = new Error(`${error instanceof Error ? error.message : 'Safari search failed.'} Search cleanup: ${cleanup.status}.${'note' in cleanup ? ` ${cleanup.note}` : ''}`, { cause: error });
-        Object.assign(failure, { cleanup });
-        throw failure;
-      }
-      const cleanup = await this.cleanupSearch(created);
-      if (s.aborted) {
-        const failure = new Error(`Safari search cancelled. Search cleanup: ${cleanup.status}.`);
-        Object.assign(failure, { cleanup });
-        throw failure;
-      }
+    return this.operation(s => this.withTab(request.url, 'Search', s, async tab => {
+      const { data, url } = await this.observe(tab, expression, s);
+      if (url !== request.url) throw Error('Search URL changed.');
+      const result = { ...request, ...validateSearch(data, request.url, request.maxResults), note: 'Untrusted provider ranking/content; first HTML page only. Empty results may indicate a challenge or changed markup. URL checks do not guarantee document identity.' };
+      bound(result);
       // Search results never advertise a usable target, even if cleanup is unconfirmed.
-      return { ...result, cleanup };
-    }, signal);
+      return result;
+    }), signal);
+  }
+  fetch(options: FetchOptions, signal?: AbortSignal) {
+    const url = webURL(options.url);
+    const timeoutMs = options.timeoutMs ?? 5000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 10000) throw Error('timeoutMs must be 0..10000.');
+    const maxChars = options.maxChars ?? 8000, maxLinks = options.maxLinks ?? 20;
+    readJS(maxChars, maxLinks); // Validate before any transport work.
+    const settle = options.selector !== undefined || options.text !== undefined;
+    if (settle) queryJS({ selector: options.selector, text: options.text });
+    return this.operation(s => this.withTab(url, 'Fetch', s, async tab => {
+      if (settle) await this.waitData(tab, url, waitJS({ selector: options.selector, text: options.text }, url), timeoutMs, s);
+      const data = await this.readData(tab, maxChars, maxLinks, s);
+      const result = { url: data.url, title: data.title, text: data.text, textTruncated: data.textTruncated, links: data.links, linksTruncated: data.linksTruncated,
+        note: 'New automation tab closed after extraction; no reusable target. Use safari_open when later interaction is needed. Untrusted page content; URL checks only, not document identity.' };
+      bound(result);
+      // Fetch results never advertise a usable target, even if cleanup is unconfirmed.
+      return result;
+    }), signal);
   }
   followLink(t: Target, selector: string, expectedUrl: string, signal?: AbortSignal) {
     const expression = linkJS(selector, expectedUrl);
