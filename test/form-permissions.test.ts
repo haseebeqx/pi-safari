@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SessionApproval } from '../src/permissions.ts';
 import { Safari, type Interaction } from '../src/safari.ts';
 import type { Transport, ToolReply } from '../src/mcp.ts';
@@ -32,6 +35,11 @@ class FormTransport implements Transport {
       case 'close_tab': this.tabs.delete(String(args.handle)); return reply('closed');
       case 'get_page_content': return { content: [{ type: 'text', text: '1 textbox Name\n2 textbox Email\n3 button Submit' }] };
       case 'evaluate_javascript': {
+        // Upload expressions cannot run against the DOM fixture; return the fixed
+        // multipart result the real script produces on the live smoke run.
+        if (String(args.expression).includes('DataTransfer')) {
+          return reply(JSON.stringify({ attached: true, submitted: true, files: 1, action: url, status: 200, contentType: 'text/html', body: 'ok' }));
+        }
         // Execute the actual fixed read/readiness/search scripts against a small
         // DOM fixture; search intentionally models an empty results page.
         const result = vm.runInNewContext(`(function(){${args.expression}})()`, {
@@ -75,7 +83,9 @@ function setup() {
     // Scripted classifier responses for these exact fixture tasks. Not a live semantic accuracy test.
     const approve = data.currentUserRequest.startsWith('Fill this form with name Alice and email alice@example.com') &&
       (data.proposal.scope === 'type' && ['Alice', 'alice@example.com'].includes(data.proposal.args.action.value) ||
-       data.currentUserRequest.endsWith(' and submit it') && data.proposal.scope === 'click');
+       data.currentUserRequest.endsWith(' and submit it') && data.proposal.scope === 'click') ||
+      data.currentUserRequest === 'Upload this file to the form' && data.proposal.scope === 'upload' &&
+      data.proposal.args.files.length === 1;
     return { result: async () => ({ stopReason: 'stop', content: [{ type: 'text', text: JSON.stringify({ decision: approve ? 'approve' : 'deny' }) }] }) };
   } };
   // This is the production guard, not an always-allow test authorizer.
@@ -134,4 +144,18 @@ test('form: read/browse/search need no permission or classifier', async () => {
   assert.deepEqual(search.results, []); assert.equal(search.cleanup.status, 'closed');
   assert.equal(backend.calls.some(c => c.name === 'page_interactions'), false);
   assert.equal(decisions(), 0);
+});
+
+test('form: upload requires an explicit upload task, not a fill task', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'safari-upload-')); const file = join(dir, 'notes.txt'); writeFileSync(file, 'data');
+  const g = setup(); const { backend, ctx, input, decisions } = g;
+  const upload = () => g.approval.run(ctx, 'upload', () => g.safari.upload(g.target, url, 'input#f', [file]), undefined, { args: { ...g.target, expectedUrl: url, selector: 'input#f', purpose: 'Upload notes', files: [file] }, targetContext: g.safari.permissionContext(g.target, url) });
+  input('Fill this form with name Alice and email alice@example.com');
+  await assert.rejects(upload(), /denied/);
+  assert.equal(backend.calls.some(c => c.name === 'evaluate_javascript'), false);
+  input('Upload this file to the form');
+  const out = await upload();
+  assert.equal(out.submitted, true); assert.equal(out.files, 1);
+  assert.equal(out.action, url); assert.equal(out.status, 200);
+  assert.equal(decisions(), 2);
 });

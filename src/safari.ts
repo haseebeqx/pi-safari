@@ -1,3 +1,5 @@
+import { statSync, readFileSync } from 'node:fs';
+import { basename, extname, isAbsolute } from 'node:path';
 import { queryJS, waitJS, type Query } from './inspection.ts';
 import { searchRequest, searchJS, validateSearch, type SearchOptions } from './search.ts';
 import { SafariMCP, toolJSON, type Transport } from './mcp.ts';
@@ -266,6 +268,21 @@ export class Safari {
       return { ...t, url: info.url.slice(0, 8192), note: 'Action sent once; may navigate or submit. Inspect before any retry. UID can be stale even at the same URL.' };
     }, signal);
   }
+  upload(t: Target, expectedUrl: string, selector: string, paths: string[], signal?: AbortSignal) {
+    const expression = uploadJS(selector, expectedUrl, paths); // Validate and read files before any transport work.
+    return this.operation(async s => {
+      this.authorize();
+      await this.atURL(t, expectedUrl, s);
+      this.authorize();
+      const data = await this.evaluate(expression, s);
+      if (!data || typeof data !== 'object' || data.attached !== true || typeof data.submitted !== 'boolean' || typeof data.files !== 'number') throw Error('Invalid Safari upload result.');
+      if (data.submitted && (typeof data.action !== 'string' || typeof data.status !== 'number' || typeof data.contentType !== 'string' || typeof data.body !== 'string')) throw Error('Invalid Safari upload result.');
+      const info = await this.call('page_info', {}, s); this.target(t);
+      return { ...t, ...(typeof info?.url === 'string' ? { url: info.url.slice(0, 8192) } : {}), files: data.files, submitted: data.submitted,
+        ...(data.submitted ? { action: data.action.slice(0, 8192), status: data.status, contentType: data.contentType.slice(0, 500), response: data.body.slice(0, 200) } : {}),
+        note: data.submitted ? 'Form posted once as multipart to its action URL via fetch; page did not navigate. Never blindly replay.' : 'Files attached; no enclosing form found, nothing submitted.' };
+    }, signal);
+  }
   read(t: Target, chars = 8000, links = 20, signal?: AbortSignal) {
     readJS(chars, links); // Validate before any transport work; throws synchronously.
     return this.operation(async s => {
@@ -321,6 +338,51 @@ export interface Interaction {
   value?: string;
   replaceAll?: boolean;
   scrollDelta?: { x: number; y: number };
+}
+const UPLOAD_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json', '.csv': 'text/csv',
+  '.html': 'text/html', '.css': 'text/css', '.xml': 'application/xml', '.js': 'text/javascript', '.ts': 'text/typescript',
+  '.zip': 'application/zip', '.mp3': 'audio/mpeg', '.mp4': 'video/mp4',
+};
+function readUploadFile(p: string) {
+  if (typeof p !== 'string' || p.length < 1 || p.length > 4096 || !isAbsolute(p)) throw Error('files must be absolute local paths, at most 4096 characters.');
+  const stat = statSync(p, { throwIfNoEntry: false });
+  if (!stat?.isFile()) throw Error('Not an existing regular file.');
+  if (stat.size > 10 * 1024 * 1024) throw Error('File exceeds the 10 MiB upload limit.');
+  const data = readFileSync(p);
+  if (data.length > 10 * 1024 * 1024) throw Error('File exceeds the 10 MiB upload limit.');
+  return { n: basename(p), m: UPLOAD_MIME[extname(p).toLowerCase()] ?? 'application/octet-stream', b: data.toString('base64') };
+}
+// Attaches real files to a file input and posts its enclosing form as multipart via fetch.
+// WebKit's native form serialization cannot upload JS-built Files (it sends only the file
+// name), so the multipart body is sent with fetch(FormData), which includes every form field.
+// File bytes are embedded as base64; this is the only upload channel Apple Safari MCP exposes.
+export function uploadJS(selector: string, expectedUrl: string, paths: string[]): string {
+  if (typeof selector !== 'string' || selector.length < 1 || selector.length > 500) throw Error('CSS selector must be 1..500 characters.');
+  webURL(expectedUrl);
+  if (!Array.isArray(paths) || paths.length < 1 || paths.length > 10) throw Error('files must contain 1..10 absolute paths.');
+  const files = paths.map(readUploadFile);
+  return `((async()=>{
+if(location.href!==${JSON.stringify(expectedUrl)})throw Error('Page URL changed; read again');
+const es=document.querySelectorAll(${JSON.stringify(selector)});
+if(es.length!==1)throw Error('Selector must match exactly one element');
+const input=es[0];
+if(!(input instanceof HTMLInputElement)||input.type!=='file')throw Error('Selector must match an <input type=file>');
+if(input.disabled)throw Error('File input is disabled');
+if(!input.multiple&&${files.length}>1)throw Error('Input accepts only one file');
+const dt=new DataTransfer();
+for(const f of ${JSON.stringify(files)}){const bin=atob(f.b);const bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);dt.items.add(new File([bytes],f.n,{type:f.m}))}
+input.files=dt.files;
+input.dispatchEvent(new Event('change',{bubbles:true}));
+const form=input.closest('form');
+if(!form)return JSON.stringify({attached:true,submitted:false,files:${files.length}});
+if((form.method||'get').toLowerCase()!=='post')throw Error('Form must use method=post for file upload');
+const fd=new FormData(form);
+const res=await fetch(form.action,{method:'POST',body:fd});
+const text=await res.text();
+return JSON.stringify({attached:true,submitted:true,files:${files.length},action:form.action,status:res.status,contentType:res.headers.get('content-type')||'',body:text.slice(0,200)})
+})())`;
 }
 export function validateInteraction(a: Interaction) {
   if (!a || !['click', 'type', 'keyPress', 'scroll', 'hover'].includes(a.type) || typeof a.purpose !== 'string' || !a.purpose.length || a.purpose.length > 300) throw Error('Invalid interaction type or purpose.');

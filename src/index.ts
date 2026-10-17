@@ -135,6 +135,14 @@ export default function(pi: ExtensionAPI) {
       return approval.run(ctx, args.action.type, async usage => ({ ...result(await safari.interact(args, args.expectedUrl, args.action, signal)), usage }), signal, { args, targetContext: safari.permissionContext(args, args.expectedUrl) }); },
   });
   pi.registerTool({
+    name: 'safari_upload', label: 'Upload files to Safari form',
+    description: 'Attach existing local files (absolute paths) to a single <input type=file> matched by a CSS selector at exact expectedUrl, then post its enclosing form as multipart (all form fields included) to the form action URL via fetch. The form must use method=post; the page does not navigate and the response is returned. Up to 10 files, 10 MiB each. Independently checked against the current user task; /safari-permissions allow bypasses task checks. Never retried; inspect before retrying.',
+    parameters: Type.Object({ ...Target, expectedUrl: Type.String({ maxLength: 8192 }), selector: Type.String({ minLength: 1, maxLength: 500 }), purpose: Type.String({ minLength: 1, maxLength: 300 }), files: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 10 }) }),
+    annotations: { readOnlyHint: false },
+    async execute(_id, args, signal, _update, ctx) {
+      return approval.run(ctx, 'upload', async usage => ({ ...result(await safari.upload(args, args.expectedUrl, args.selector, args.files, signal)), usage }), signal, { args, targetContext: safari.permissionContext(args, args.expectedUrl) }); },
+  });
+  pi.registerTool({
     name: 'safari_screenshot', label: 'Safari screenshot',
     description: 'Capture viewport or full page PNG using verified native Safari capability. Returns backend temporary file path text, not inline image. No caller-supplied save path or element crop. Does not read the artifact automatically.',
     parameters: Type.Object({ ...Target, fullPage: Type.Optional(Type.Boolean()) }), annotations: { readOnlyHint: true },

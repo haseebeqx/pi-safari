@@ -15,7 +15,7 @@ function setup() {
 
 test('registration and lifecycle; mutations fail closed without launching Safari', async () => {
   const { tools, commands, events } = setup();
-  assert.equal(tools.size, 17);
+  assert.equal(tools.size, 18);
   assert.equal(tools.has('safari_request_scope'), false);
   assert.equal(tools.get('safari_read').parameters.properties.maxChars.maximum, 12000);
   assert.equal(tools.get('safari_search').parameters.properties.maxResults.maximum, 10);
@@ -104,7 +104,7 @@ test('real Safari queue retains each operation generation across regrant', async
 
 test('close and scroll wrappers bypass permission without task/grant; other actions stay blocked', async () => {
   const { tools } = setup();
-  assert.deepEqual(ACTION_SCOPES, ['activate', 'navigate', 'click', 'type', 'keyPress', 'hover']);
+  assert.deepEqual(ACTION_SCOPES, ['activate', 'navigate', 'click', 'type', 'keyPress', 'hover', 'upload']);
   const originalClose = Safari.prototype.closeTab, originalInteract = Safari.prototype.interact;
   let closes = 0, scrolls = 0;
   Safari.prototype.closeTab = async () => { closes++; return { status: 'closed' }; };
@@ -122,6 +122,7 @@ test('close and scroll wrappers bypass permission without task/grant; other acti
       for (const name of ['safari_activate', 'safari_navigate']) {
         await assert.rejects(tools.get(name).execute('id', {}, undefined, undefined, ctx), /disabled/);
       }
+      await assert.rejects(tools.get('safari_upload').execute('id', { targetId: 'page-1', epoch: 'one', expectedUrl: 'https://example.com/', selector: 'input#f', purpose: 'Upload file', files: ['/tmp/f.txt'] }, undefined, undefined, ctx), /disabled/);
     }
     assert.equal(closes, 4); assert.equal(scrolls, 4);
   } finally { Safari.prototype.closeTab = originalClose; Safari.prototype.interact = originalInteract; }

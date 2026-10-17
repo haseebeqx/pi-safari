@@ -2,7 +2,10 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFile, lstat } from 'node:fs/promises';
+import { readFile, lstat, rm } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Safari, type Target, type Interaction } from '../src/safari.ts';
 import { SafariMCP, toolJSON, type Transport } from '../src/mcp.ts';
 import { searchRequest } from '../src/search.ts';
@@ -17,6 +20,7 @@ async function check(name: string, fn: () => Promise<unknown>) {
 const fixture = `<!doctype html><meta charset="utf-8"><title>Pi Safari disposable fixture</title>
 <style>body{font:18px sans-serif}button,input,a{display:block;margin:12px}#spacer{height:2400px}</style>
 <h1>Safari fixture ready</h1><a id="next" href="/next">Fixture next</a>
+<form id="up" action="/upload" method="post"><input id="file" type="file" name="doc"></form>
 <button id="click">Fixture click</button><input id="input" aria-label="Fixture input" value="seed">
 <button id="hover">Fixture hover</button><output id="state">initial</output><div id="spacer"></div><p>Bottom marker</p>
 <script>
@@ -30,7 +34,17 @@ onscroll=()=>{document.body.dataset.scrolled='yes';state('scrolled:'+Math.round(
 setTimeout(()=>{const p=document.createElement('p');p.id='delayed';p.textContent='Delayed marker';document.body.prepend(p)},600);
 console.log('pi-safari-fixture-console');fetch('/probe').then(r=>r.text()).then(()=>console.log('pi-safari-fixture-fetch'));
 </script>`;
-const server = createServer((req, res) => { res.setHeader('Cache-Control', 'no-store'); res.setHeader('Content-Type', req.url?.startsWith('/probe') ? 'text/plain' : 'text/html'); res.end(req.url?.startsWith('/probe') ? 'probe-ok' : fixture); });
+let upload: { type: string; body: string } | undefined;
+const server = createServer((req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method === 'POST' && req.url?.startsWith('/upload')) {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => { upload = { type: String(req.headers['content-type'] ?? ''), body }; res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>uploaded</title><p>upload-ok</p>'); });
+    return;
+  }
+  res.setHeader('Content-Type', req.url?.startsWith('/probe') ? 'text/plain' : 'text/html'); res.end(req.url?.startsWith('/probe') ? 'probe-ok' : fixture);
+});
 await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
 const address = server.address(); assert(address && typeof address !== 'string');
 const base = `http://127.0.0.1:${address.port}`;
@@ -98,6 +112,22 @@ try {
   await check('screenshot.fullPage', async () => { const r = await safari.screenshot(await mainTab(), true); const path = r.text.match(/\/var\/folders\/[^\n"']+\/T\/com\.apple\.WebDriver\/safari-mcp-[A-F0-9-]+\.png/i)?.[0]; assert(path); const info = await lstat(path); assert(info.isFile()); const bytes = await readFile(path); assert(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))); const height = bytes.readUInt32BE(20); assert(height > 2000, 'Full page should include tall fixture'); return { path, bytes:info.size, width:bytes.readUInt32BE(16), height }; });
   await check('follow', async () => { const followed = await safari.followLink(await mainTab(), '#next', base+'/'); const r = await safari.read(followed); assert.equal(r.url, base+'/next'); assert.equal((await safari.read(await mainTab())).url, base+'/'); return followed; });
   await check('navigate', async () => { const r = await safari.navigate(await mainTab(), base+'/', base+'/navigated'); assert.equal((await safari.read(await mainTab())).url, base+'/navigated'); return r; });
+  await check('upload', async () => {
+    const file = join(tmpdir(), `pi-safari-live-upload-${Date.now()}.txt`);
+    writeFileSync(file, 'pi-safari live upload bytes');
+    try {
+      // Runs on the navigated fixture page (same document, form present). The post goes
+      // to the loopback /upload endpoint via fetch and the page does not navigate.
+      const r = await safari.upload(await mainTab(), base + '/navigated', '#file', [file]);
+      assert.equal(r.submitted, true); assert.equal(r.files, 1);
+      assert.equal(r.action, base + '/upload'); assert.equal(r.status, 200);
+      for (let i = 0; i < 30 && !upload; i++) await new Promise(res => setTimeout(res, 100));
+      assert(upload, 'No multipart request received');
+      assert.match(upload.type, /^multipart\/form-data/);
+      assert.ok(upload.body.includes('name="doc"') && upload.body.includes('pi-safari live upload bytes'), 'File content missing from multipart body');
+      return { submitted: r.submitted, status: r.status, bytes: upload.body.length };
+    } finally { await rm(file, { force: true }); }
+  });
   await check('close', async () => { const t = await mainTab(); assert.equal((await safari.closeTab(t)).status, 'closed'); assert(!(await safari.tabs()).tabs.some(x=>x.targetId===t.targetId)); return 'confirmed absent'; });
   await check('search', async () => { const r = await safari.search(search); assert.equal(r.cleanup.status, 'closed'); assert(r.results.length > 0, 'Provider returned no results (challenge/markup/network possible)'); return r; });
 } finally {

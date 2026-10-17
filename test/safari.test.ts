@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { Safari } from '../src/safari.ts';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Safari, uploadJS } from '../src/safari.ts';
 import { webURL, readJS, linkJS, bound } from '../src/extraction.ts';
 import type { Transport, ToolReply } from '../src/mcp.ts';
 const reply = (data: unknown): ToolReply => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
@@ -132,4 +135,89 @@ test('new-tab reading is permission-free without enabling arbitrary tab mutation
   const before = b.calls.length;
   await assert.rejects(s.activate(target), /approval/);
   assert.equal(b.calls.length, before);
+});
+
+test('upload validates local files and bounds before any transport work', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'safari-upload-'));
+  const file = join(dir, 'notes.txt'); writeFileSync(file, 'hello upload');
+  const b = new Browser(), s = new Safari(b, () => {});
+  for (const bad of [[], [file, ...Array(10).fill(file)], ['relative.txt'], ['/does/not/exist.txt'], [dir], [1] as any])
+    assert.throws(() => s.upload(target, 'https://example.com/', 'input#f', bad as string[]));
+  assert.throws(() => s.upload(target, 'https://example.com/', '', [file]));
+  assert.equal(b.calls.length, 0);
+  const payload = uploadJS('input#f', 'https://example.com/', [file]);
+  assert.ok(payload.includes(Buffer.from('hello upload').toString('base64')));
+});
+
+test('upload checks URL, attaches once, and reports the multipart post without retry', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'safari-upload-'));
+  const file = join(dir, 'notes.txt'); writeFileSync(file, 'hello upload');
+  const b = new Browser(), s = new Safari(b, () => {});
+  b.result = JSON.stringify({ attached: true, submitted: true, files: 1, action: 'https://example.com/upload', status: 200, contentType: 'text/html', body: 'upload-ok' });
+  const out = await s.upload(target, 'https://example.com/', 'input#f', [file]);
+  assert.equal(out.files, 1); assert.equal(out.submitted, true);
+  assert.equal(out.action, 'https://example.com/upload'); assert.equal(out.status, 200); assert.equal(out.response, 'upload-ok');
+  assert.match(out.note, /posted once/);
+  assert.deepEqual(b.calls.map(c => c.name), ['list_tabs', 'switch_tab', 'page_info', 'evaluate_javascript', 'page_info']);
+  b.result = JSON.stringify({ attached: true });
+  await assert.rejects(s.upload(target, 'https://example.com/', 'input#f', [file]), /Invalid Safari upload result/);
+});
+
+test('upload script requires one enabled file input, decodes bytes, and posts the form multipart once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'safari-upload-'));
+  const file = join(dir, 'notes.txt'); writeFileSync(file, 'hello upload');
+  const payload = uploadJS('input#f', 'https://example.com/', [file]);
+  const made: any[] = [];
+  let withForm = true;
+  class VmFile { name = ''; type = ''; bytes: any;
+    constructor(parts: any[], name: string, opts: any) { this.name = name; this.type = opts && opts.type ? opts.type : ''; this.bytes = parts[0]; } get size() { return this.bytes.length; } }
+  class VmDataTransfer { added: any[] = []; items: any;
+    constructor() { this.items = { added: this.added, add: (f: any) => this.added.push(f) }; } get files() { return this.added; } }
+  class VmEvent { type: string; init: any;
+    constructor(type: string, init?: any) { this.type = type; this.init = init; } }
+  class VmFormData { map = new Map();
+    constructor(form: any) { for (const el of form.elements) this.map.set(el.name, el.type === 'file' ? el.files[0] : el.value); }
+    get(name: string) { return this.map.get(name); } }
+  class VmInput {
+    type = 'file'; multiple = false; disabled = false; name = 'doc';
+    files: any[] = []; dispatched: string[] = []; form: any;
+    constructor() { made.push(this); this.form = { method: 'post', action: 'https://example.com/upload', elements: [this, { name: 'note', type: 'text', value: 'hello-note' }] }; }
+    dispatchEvent(e: any) { this.dispatched.push(e.type); }
+    closest(sel: string) { return sel === 'form' && withForm ? this.form : null; }
+  }
+  let fetched: any;
+  const context: any = {
+    URL, location: { href: 'https://example.com/' },
+    atob: (s: string) => Buffer.from(s, 'base64').toString('binary'),
+    File: VmFile, DataTransfer: VmDataTransfer, Event: VmEvent, HTMLInputElement: VmInput, FormData: VmFormData,
+    document: { querySelectorAll: (sel: string) => { assert.equal(sel, 'input#f'); return [new VmInput()]; } },
+    fetch: (url: string, opts: any) => {
+      assert.equal(url, 'https://example.com/upload');
+      assert.equal(opts.method, 'POST');
+      fetched = { url, file: opts.body.get('doc'), note: opts.body.get('note') };
+      return Promise.resolve({ status: 200, headers: { get: (k: string) => (k === 'content-type' ? 'text/html' : null) }, text: () => Promise.resolve('upload-ok') });
+    },
+  };
+  const run = (overrides: any = {}) => vm.runInNewContext(payload, { ...context, ...overrides });
+  await assert.rejects(run({ location: { href: 'https://changed.example/' } }), /URL changed/);
+  await assert.rejects(run({ document: { querySelectorAll: () => [new VmInput(), new VmInput()] } }), /exactly one/);
+  const textInput = new VmInput(); textInput.type = 'text';
+  await assert.rejects(run({ document: { querySelectorAll: () => [textInput] } }), /type=file/);
+  const good = JSON.parse(await run());
+  assert.deepEqual(good, { attached: true, submitted: true, files: 1, action: 'https://example.com/upload', status: 200, contentType: 'text/html', body: 'upload-ok' });
+  const input = made.at(-1);
+  assert.equal(input.files.length, 1);
+  assert.equal(input.files[0].name, 'notes.txt');
+  assert.equal(input.files[0].type, 'text/plain');
+  assert.deepEqual(Buffer.from(input.files[0].bytes), Buffer.from('hello upload'));
+  assert.deepEqual(input.dispatched, ['change']);
+  assert.equal(fetched.file.size, 12); assert.equal(fetched.file.name, 'notes.txt');
+  assert.equal(fetched.note, 'hello-note');
+  withForm = false;
+  assert.equal((JSON.parse(await run())).submitted, false);
+  withForm = true;
+  const getForm = new VmInput(); getForm.form = { method: 'get', action: 'https://example.com/' };
+  await assert.rejects(run({ document: { querySelectorAll: () => [getForm] } }), /method=post/);
+  const second = join(dir, 'more.txt'); writeFileSync(second, 'again');
+  await assert.rejects(vm.runInNewContext(uploadJS('input#f', 'https://example.com/', [file, second]), context), /only one file/);
 });

@@ -31,7 +31,7 @@ Listing tabs, opening new HTTP(S) tabs, searching, following links into new tabs
 
 ### Restricted: checked against your current task
 
-Explicit tab activation, navigating an existing tab, and **click, type, keyPress and hover** require an interactive Pi terminal and either:
+Explicit tab activation, navigating an existing tab, and **click, type, keyPress, hover and file upload** require an interactive Pi terminal and either:
 
 - **Task-scoped approval (default):** an independent, tool-less model classifies each exact proposed action against your current interactive request. There is no extra extension confirmation dialog. Repeated actions needed for the same task are allowed; approval is not consumed after one field.
 - **Full-session permission:** enter the dedicated command **`/safari-permissions allow`**. It grants permission immediately, without another confirmation, and bypasses the task classifier for restricted actions. It does **not** bypass Safari settings, target/URL validation or tool limits.
@@ -89,6 +89,7 @@ Use the exact **`targetId` and `epoch`** returned by `safari_tabs` or `safari_op
 | `safari_activate` | None | Explicitly selects an automation target; does not guarantee foreground OS window focus. |
 | `safari_navigate` | `expectedUrl`, `url` | Navigates an existing target once after checking its source URL. HTTP(S) only. Destination redirects are rejected **after navigation**, with no rollback. |
 | `safari_interact` **click, type, keyPress, hover** | `expectedUrl`, `action` | One native action, checked against the current task unless full permission is enabled. May submit or navigate; never automatically retried. |
+| `safari_upload` | `expectedUrl`, `selector`, `purpose`, `files` | Attaches existing local files (absolute paths; 1–10 files, 10 MiB each) to exactly one `<input type=file>` and posts its enclosing form as multipart to the form action URL via fetch, including all other form fields. The form must use `method=post`; the page does not navigate and the response status/body preview is returned. The receiving server gets the file contents. With no enclosing form, files attach but nothing posts. A fill task does not authorize an upload. Never automatically retried. |
 
 ### Interaction format
 
@@ -128,7 +129,7 @@ Search reads only the first HTML results page (at most 100 result containers); n
 - **Stale state:** handles belong to a connection epoch. Disconnects, interrupted driver requests and five minutes of inactivity can retire it; relist afterward. Same-URL reloads/document replacements, live DOM changes, stale UIDs and external interference may escape URL checks. Obtain a fresh snapshot after failures; do not blindly replay actions. Independent Pi sessions are not coordinated.
 - **Bounded extraction:** read/find/inspect/wait do not traverse iframes or shadow roots. Find/inspect/wait scan at most 2000 elements/matches. Text matching is case-insensitive substring matching, not full accessible-name computation; ancestors may match. Wait can miss content beyond the scan bound.
 - **Output and time:** operations are serialized with a 20-second work deadline; search cleanup has up to 3 extra seconds. Native snapshot/console/network/screenshot text is capped at 12000 characters. Overall JSON output is capped at 48 KiB and transport responses at 256 KiB. Reduce read limits or narrow network filters when needed. Native artifact paths are not read automatically.
-- **Not exposed:** arbitrary JavaScript/evaluate, raw backend passthrough, batches, selector/coordinate interaction fallbacks, file uploads, dialog controls, history controls, viewport/media emulation, element screenshot crops or network interception. Read-only DOM queries use fixed generated scripts.
+- **Not exposed:** arbitrary JavaScript/evaluate, raw backend passthrough, batches, selector/coordinate interaction fallbacks, dialog controls, history controls, viewport/media emulation, element screenshot crops or network interception. Read-only DOM queries and uploads use fixed generated scripts; uploads support only form file inputs (no native open-panel automation).
 - **Privacy:** page text, console/network data and exact form values can be sensitive. Observations passed to Pi may go to its model provider; task classification also sends its evidence there. Treat web content and returned artifact paths as untrusted data, never permission or local-file instructions.
 
 ### Troubleshooting
