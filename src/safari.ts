@@ -8,6 +8,7 @@ export interface Target { targetId: string; epoch: string }
 export interface FetchOptions { url: string; selector?: string; text?: string; timeoutMs?: number; maxChars?: number; maxLinks?: number }
 export type TabCleanup = { status: 'closed' | 'already-absent' } | { status: 'unidentified' | 'skipped-retired-epoch' | 'failed'; note: string }
 const HANDLE = /^[A-Za-z0-9_-]{1,200}$/;
+export type MediaKind = 'screen' | 'print';
 export class Safari {
   private generation = 0;
   private observed = new Map<string, { epoch: string; url: string; text: string }>();
@@ -197,12 +198,47 @@ export class Safari {
   activate(t: Target, signal?: AbortSignal) {
     return this.operation(async s => { this.authorize(); await this.select(t, s, true); return { ...t, status: 'selected' }; }, signal);
   }
-  snapshot(t: Target, entirePage = false, signal?: AbortSignal) {
-    return this.operation(s => this.checkedBackend(t, 'get_page_content', {
+  snapshot(t: Target, entirePage = false, media?: MediaKind, signal?: AbortSignal) {
+    return this.operation(s => this.snapshotData(t, entirePage, media, s), signal);
+  }
+  private async snapshotData(t: Target, entirePage: boolean, media: MediaKind | undefined, signal: AbortSignal) {
+    const capture = () => this.checkedBackend(t, 'get_page_content', {
       format: 'textTree', region: entirePage ? 'entire_page' : 'viewport', nodeIds: 'interactive',
       includeAccessibilityAttributes: true, includeURLs: true, includeSubframes: false,
       includeRects: true, maxWordsPerParagraph: 30,
-    }, s), signal);
+    }, signal);
+    if (media === undefined) return capture();
+    // Call-scoped media emulation: set, capture, always restore. Infrastructure-level like
+    // switch_tab (never user-approved) because it is verified with matchMedia and restored
+    // within the same serialized operation, including when the capture fails.
+    await this.select(t, signal);
+    const before = await this.currentMedia(signal);
+    const changed = before !== media;
+    if (changed) {
+      await this.mutate('set_emulated_media', { media }, signal, true);
+      if (await this.currentMedia(signal) !== media) throw Error(`Safari emulated media did not switch to ${media}.`);
+    }
+    let result: any, captureError: unknown, restoreError: unknown;
+    try { result = await capture(); } catch (error) { captureError = error; }
+    if (changed && !signal.aborted) {
+      try { await this.restoreMedia(before, signal); } catch (error) { restoreError = error; }
+    }
+    if (captureError !== undefined) {
+      const failure = captureError instanceof Error ? captureError : Error('Safari print-media snapshot failed.');
+      if (restoreError !== undefined) throw new Error('Safari print-media snapshot failed and media restore is unconfirmed; relist tabs and re-run.', { cause: failure });
+      throw failure;
+    }
+    if (restoreError !== undefined) throw restoreError instanceof Error ? restoreError : Error('Safari emulated media restore failed.');
+    return result;
+  }
+  private async currentMedia(signal: AbortSignal): Promise<MediaKind> {
+    const media = await this.evaluate(`JSON.stringify(window.matchMedia('print').matches ? 'print' : 'screen')`, signal);
+    if (media !== 'screen' && media !== 'print') throw Error('Safari emulated media state is unreadable.');
+    return media;
+  }
+  private async restoreMedia(media: MediaKind, signal: AbortSignal) {
+    await this.mutate('set_emulated_media', { media }, signal, true);
+    if (await this.currentMedia(signal) !== media) throw Error(`Safari emulated media could not be restored to ${media}; the tab may still use print emulation.`);
   }
   find(t: Target, query: Query, inspect = false, signal?: AbortSignal) {
     const expression = queryJS(query, inspect);

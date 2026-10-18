@@ -125,7 +125,7 @@ test('close compatibility rejects mismatched handle schema before browser work',
         if (compatible) await m.call(name, {});
         else await assert.rejects(m.call(name, {}), /capability unavailable/);
       }
-      assert.equal(d.calls.filter(c => c.method === 'tools/call').length, compatible ? 8 : 1);
+      assert.equal(d.calls.filter(c => c.method === 'tools/call').length, compatible ? 9 : 1);
       await assert.rejects(m.call('set_viewport_size', {}), /Unsupported/);
     } finally { m.close(); }
   }

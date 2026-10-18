@@ -231,6 +231,18 @@ export const BACKEND_SCHEMAS = {
       }
     },
     "type": "object"
+  },
+  "set_emulated_media": {
+    "properties": {
+      "media": {
+        "description": "CSS media type to emulate, e.g. \"screen\" or \"print\". Empty string clears the override.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "media"
+    ],
+    "type": "object"
   }
 } as const;
 

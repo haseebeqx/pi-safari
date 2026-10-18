@@ -18,8 +18,8 @@ async function check(name: string, fn: () => Promise<unknown>) {
   console.log(JSON.stringify(results.at(-1)));
 }
 const fixture = `<!doctype html><meta charset="utf-8"><title>Pi Safari disposable fixture</title>
-<style>body{font:18px sans-serif}button,input,a{display:block;margin:12px}#spacer{height:2400px}</style>
-<h1>Safari fixture ready</h1><a id="next" href="/next">Fixture next</a>
+<style>body{font:18px sans-serif}button,input,a{display:block;margin:12px}#spacer{height:2400px}.screen-only{display:block}.print-only{display:none}@media print{.screen-only{display:none}.print-only{display:block}}</style>
+<h1>Safari fixture ready</h1><div class="screen-only">Screen layout marker</div><div class="print-only">Print layout marker</div><a id="next" href="/next">Fixture next</a>
 <form id="up" action="/upload" method="post"><input id="file" type="file" name="doc"></form>
 <button id="click">Fixture click</button><input id="input" aria-label="Fixture input" value="seed">
 <button id="hover">Fixture hover</button><output id="state">initial</output><div id="spacer"></div><p>Bottom marker</p>
@@ -104,6 +104,16 @@ try {
   await check('read', async () => { const r = await safari.read(await mainTab()); assert.match(r.text, /Safari fixture ready/); assert(r.links.some((l: {href: string}) => l.href === base + '/next')); return { title: r.title }; });
   await check('activate', async () => { const other = await safari.open(base + '/next'); const r = await safari.activate(await mainTab()); assert.equal(r.status, 'selected'); assert.equal(toolJSON(await guarded.call('page_info', {})).url, base + '/'); await safari.closeTab(other); return 'Selected original fixture instead of second disposable tab'; });
   await check('snapshot', async () => { const r = await safari.snapshot(await mainTab(), true); assert.match(r.text, /Fixture click/); return r.text; });
+  await check('snapshot.print', async () => {
+    const t = await mainTab();
+    const print = await safari.snapshot(t, true, 'print');
+    assert.match(print.text, /Print layout marker/);
+    assert.doesNotMatch(print.text, /Screen layout marker/);
+    const screen = await safari.snapshot(t, true);
+    assert.match(screen.text, /Screen layout marker/);
+    assert.doesNotMatch(screen.text, /Print layout marker/);
+    return 'print rules visible in print snapshot; restored for screen snapshot';
+  });
   await check('find', async () => { const r = await safari.find(await mainTab(), { selector: 'button' }); assert.equal(r.matches.length, 2); return r.matches.map((m: {id:string}) => m.id); });
   await check('inspect', async () => { const r = await safari.find(await mainTab(), { selector: '#input' }, true); assert.equal(r.matches[0].tag, 'input'); return r.matches[0]; });
   await check('wait', async () => { const r = await safari.wait(await mainTab(), base + '/', { selector: '#delayed' }); assert(r.matched); await assert.rejects(safari.wait(await mainTab(), base + '/', { selector: '#absent' }, 0), /timed out/); return r; });

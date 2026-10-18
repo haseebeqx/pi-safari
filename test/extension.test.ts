@@ -21,6 +21,8 @@ test('registration and lifecycle; mutations fail closed without launching Safari
   assert.equal(tools.get('safari_search').parameters.properties.maxResults.maximum, 10);
   assert.equal(tools.get('safari_fetch').parameters.properties.maxChars.maximum, 12000);
   assert.equal(tools.get('safari_fetch').parameters.properties.timeoutMs.maximum, 10000);
+  assert.deepEqual(Object.keys(tools.get('safari_snapshot').parameters.properties), ['targetId', 'epoch', 'entirePage', 'media']);
+  assert.match(tools.get('safari_snapshot').description ?? '', /print/);
   const execute = () => tools.get('safari_activate').execute('id', {}, undefined, undefined, context());
   await assert.rejects(execute(), /disabled/);
   const command = commands.get('safari-permissions').handler;

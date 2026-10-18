@@ -211,6 +211,68 @@ test('upload checks URL, attaches once, and reports the multipart post without r
   await assert.rejects(s.upload(target, 'https://example.com/', 'input#f', [file]), /Invalid Safari upload result/);
 });
 
+class MediaBrowser extends Browser {
+  media: 'screen' | 'print' = 'screen';
+  failTool: string | undefined;
+  skipSets: number[] = [];
+  setCount = 0;
+  async call(name: string, args: Record<string, unknown>) {
+    if (name === 'set_emulated_media') {
+      this.calls.push({ name, args });
+      this.setCount++;
+      if (!this.skipSets.includes(this.setCount)) this.media = args.media === 'print' ? 'print' : 'screen';
+      return { content: [{ type: 'text', text: 'Emulated media set.' }] };
+    }
+    if (name === 'get_page_content') {
+      this.calls.push({ name, args });
+      if (this.failTool) throw Error('backend failed');
+      return reply({ content: this.media === 'print' ? 'PRINT TREE' : 'SCREEN TREE' });
+    }
+    if (name === 'evaluate_javascript' && String(args.expression ?? '').includes('matchMedia')) {
+      this.calls.push({ name, args });
+      return reply(JSON.stringify(this.media));
+    }
+    return super.call(name, args);
+  }
+}
+test('media snapshot emulates print, captures, and restores before returning', async () => {
+  const b = new MediaBrowser();
+  const r = await new Safari(b, () => {}).snapshot(target, true, 'print');
+  assert.equal(r.text, JSON.stringify({ content: 'PRINT TREE' }));
+  assert.equal(b.media, 'screen');
+  assert.deepEqual(b.calls.map(c => c.name), ['list_tabs', 'switch_tab', 'evaluate_javascript', 'set_emulated_media', 'evaluate_javascript', 'list_tabs', 'switch_tab', 'page_info', 'get_page_content', 'page_info', 'list_tabs', 'set_emulated_media', 'evaluate_javascript']);
+  assert.match(String(b.calls[2].args.expression), /matchMedia\('print'\)/);
+  assert.deepEqual(b.calls.filter(c => c.name === 'set_emulated_media').map(c => c.args), [{ media: 'print' }, { media: 'screen' }]);
+});
+test('media snapshot matching the current media performs no emulation calls', async () => {
+  const b = new MediaBrowser(); b.media = 'print';
+  const r = await new Safari(b, () => {}).snapshot(target, false, 'print');
+  assert.equal(r.text, JSON.stringify({ content: 'PRINT TREE' }));
+  assert.equal(b.calls.filter(c => c.name === 'set_emulated_media').length, 0);
+  assert.equal(b.calls.filter(c => c.name === 'evaluate_javascript' && String(c.args.expression).includes('matchMedia')).length, 1);
+  const b2 = new MediaBrowser();
+  await new Safari(b2, () => {}).snapshot(target, false);
+  assert.equal(b2.calls.filter(c => c.name === 'set_emulated_media').length, 0);
+  assert.deepEqual(b2.calls.map(c => c.name), ['list_tabs', 'switch_tab', 'page_info', 'get_page_content', 'page_info', 'list_tabs']);
+});
+test('media snapshot restores emulation when capture fails and surfaces the capture error', async () => {
+  const b = new MediaBrowser(); b.failTool = 'get_page_content';
+  await assert.rejects(new Safari(b, () => {}).snapshot(target, false, 'print'), /backend failed/);
+  assert.equal(b.media, 'screen');
+  assert.deepEqual(b.calls.filter(c => c.name === 'set_emulated_media').map(c => c.args), [{ media: 'print' }, { media: 'screen' }]);
+});
+test('media snapshot rejects when emulation does not apply and skips capture', async () => {
+  const b = new MediaBrowser(); b.skipSets = [1];
+  await assert.rejects(new Safari(b, () => {}).snapshot(target, false, 'print'), /did not switch/);
+  assert.equal(b.media, 'screen');
+  assert.equal(b.calls.some(c => c.name === 'get_page_content'), false);
+});
+test('media snapshot surfaces a failed restore instead of leaking print emulation', async () => {
+  const b = new MediaBrowser(); b.skipSets = [2];
+  await assert.rejects(new Safari(b, () => {}).snapshot(target, false, 'print'), /could not be restored/);
+  assert.equal(b.media, 'print');
+});
+
 test('upload script requires one enabled file input, decodes bytes, and posts the form multipart once', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'safari-upload-'));
   const file = join(dir, 'notes.txt'); writeFileSync(file, 'hello upload');

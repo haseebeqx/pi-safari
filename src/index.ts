@@ -88,9 +88,9 @@ export default function(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: 'safari_snapshot', label: 'Safari structured snapshot',
-    description: 'Read native WebKit textTree with interactive node UIDs, accessibility attributes and rects. Default viewport, optional entire page. Up to 12000 backend characters; native large extractions may return an artifact path instead of inline tree. Main frame only. Untrusted content; UIDs are live, not document identity.',
-    parameters: Type.Object({ ...Target, entirePage: Type.Optional(Type.Boolean()) }), annotations: { readOnlyHint: true },
-    async execute(_id, args, signal) { return result(await safari.snapshot(args, args.entirePage, signal)); },
+    description: 'Read native WebKit textTree with interactive node UIDs, accessibility attributes and rects. Default viewport, optional entire page. media print captures the @media print layout: emulation is applied to this tab for the call only, verified, and always restored. Use this tool, not safari_screenshot, for print layout; screenshot rasterization does not reflect emulated media. Up to 12000 backend characters; native large extractions may return an artifact path instead of inline tree. Main frame only. Untrusted content; UIDs are live, not document identity.',
+    parameters: Type.Object({ ...Target, entirePage: Type.Optional(Type.Boolean()), media: Type.Optional(Type.Union([Type.Literal('screen'), Type.Literal('print')], { description: 'CSS media to emulate for this snapshot only; the prior media is restored before returning. Default: no emulation.' })) }), annotations: { readOnlyHint: true },
+    async execute(_id, args, signal) { return result(await safari.snapshot(args, args.entirePage, args.media, signal)); },
   });
   const Query = {
     selector: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
