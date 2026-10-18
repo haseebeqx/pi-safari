@@ -76,6 +76,7 @@ Use the exact **`targetId` and `epoch`** returned by `safari_tabs` or `safari_op
 | `safari_find` | `selector?`, `text?`, `limit?` | Visible main-frame DOM descriptors, **not native UIDs**. At least selector or text required; combined with AND. Default 20 matches, maximum 50. |
 | `safari_inspect` | `selector` | Exactly one visible match: bounded attributes, approximate name, state and rectangle. Rejects ambiguous/truncated matches; no input values, HTML or computed-style dump. |
 | `safari_wait` | `expectedUrl`, `selector?`, `text?`, `timeoutMs?` | Polls visible presence, not absence. Same query rules as find; default 5000 ms, range 0–10000. URL drift fails. |
+| `safari_wait_for_navigation` | `expectedUrl`, `timeoutMs?` | Blocks until the tab's document reaches `readyState complete` at the exact `expectedUrl` — e.g. right after `safari_navigate`, or through multi-stage redirects that land on that URL while still loading. Returns the final URL + title. Polls the target only, no navigation or mutation; default 5000 ms, range 0–10000. A modal JS dialog fails fast. |
 | `safari_screenshot` | `fullPage?` | Viewport/full-page PNG as a backend temporary **path**, not an inline image. Does not read the file automatically. |
 | `safari_console` | `limit?` | Buffered messages without clearing; default/maximum 100 entries. |
 | `safari_network` | `urlSubstring?` | Buffered Inspector request summaries without clearing; filter up to 500 characters. No bodies or interception; historical coverage is not guaranteed. |

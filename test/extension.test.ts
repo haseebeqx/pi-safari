@@ -15,7 +15,8 @@ function setup() {
 
 test('registration and lifecycle; mutations fail closed without launching Safari', async () => {
   const { tools, commands, events } = setup();
-  assert.equal(tools.size, 19);
+  assert.equal(tools.size, 20);
+  assert.deepEqual(Object.keys(tools.get('safari_wait_for_navigation').parameters.properties), ['targetId', 'epoch', 'expectedUrl', 'timeoutMs']);
   assert.equal(tools.has('safari_request_scope'), false);
   assert.equal(tools.get('safari_read').parameters.properties.maxChars.maximum, 12000);
   assert.equal(tools.get('safari_search').parameters.properties.maxResults.maximum, 10);
@@ -40,7 +41,7 @@ test('registration and lifecycle; mutations fail closed without launching Safari
 test('basic browsing wrappers do not ask permission, even in noninteractive mode', async () => {
   const { tools } = setup();
   // Stub service boundary, not authorization. No browser/process is started.
-  const methods = { safari_open: 'open', safari_search: 'search', safari_fetch: 'fetch', safari_follow_link: 'followLink', safari_read: 'read', safari_tabs: 'tabs', safari_close: 'closeTab', safari_dialog: 'dialog' } as const;
+  const methods = { safari_open: 'open', safari_search: 'search', safari_fetch: 'fetch', safari_follow_link: 'followLink', safari_read: 'read', safari_tabs: 'tabs', safari_close: 'closeTab', safari_dialog: 'dialog', safari_wait_for_navigation: 'waitNavigation' } as const;
   for (const [tool, method] of Object.entries(methods)) {
     const original = Safari.prototype[method];
     (Safari.prototype as any)[method] = async () => ({ observed: true });

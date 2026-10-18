@@ -3,7 +3,7 @@ import { basename, extname, isAbsolute } from 'node:path';
 import { queryJS, waitJS, type Query } from './inspection.ts';
 import { searchRequest, searchJS, validateSearch, type SearchOptions } from './search.ts';
 import { SafariMCP, toolJSON, type Transport } from './mcp.ts';
-import { bound, webURL, readJS, linkJS, readyJS } from './extraction.ts';
+import { bound, webURL, readJS, linkJS, readyJS, loadedJS } from './extraction.ts';
 export interface Target { targetId: string; epoch: string }
 export interface FetchOptions { url: string; selector?: string; text?: string; timeoutMs?: number; maxChars?: number; maxLinks?: number }
 export type TabCleanup = { status: 'closed' | 'already-absent' } | { status: 'unidentified' | 'skipped-retired-epoch' | 'failed'; note: string }
@@ -271,6 +271,42 @@ export class Safari {
     const expression = waitJS(query, expectedUrl);
     if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 10000) throw Error('timeoutMs must be 0..10000.');
     return this.operation(s => this.waitData(t, expectedUrl, expression, timeoutMs, s), signal);
+  }
+  // Block until the tab's document reports readyState 'complete' at the exact
+  // expectedUrl (e.g. right after safari_navigate, or through multi-stage
+  // redirects that land on the expected URL while still loading). Polls the
+  // named target only; performs no navigation or mutation. Returns final URL + title.
+  waitNavigation(t: Target, expectedUrl: string, timeoutMs = 5000, signal?: AbortSignal) {
+    webURL(expectedUrl);
+    const expression = loadedJS(expectedUrl);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 10000) throw Error('timeoutMs must be 0..10000.');
+    return this.operation(s => this.loadedData(t, expectedUrl, expression, timeoutMs, s), signal);
+  }
+  private async loadedData(t: Target, expectedUrl: string, expression: string, timeoutMs: number, signal: AbortSignal) {
+    const until = Date.now() + timeoutMs;
+    let lastUrl = '';
+    while (true) {
+      // A modal JS dialog freezes the page and would hang the poll for the full
+      // transport timeout, killing the connection; fail fast instead.
+      await this.select(t, signal);
+      const dialogs = await this.listDialogs(signal);
+      if (dialogs.length > 0) throw Error(`A modal JavaScript dialog is blocking this tab (message: ${dialogs[0].message}). Use safari_dialog to respond or dismiss, then wait again.`);
+      const data = await this.evaluate(expression, signal);
+      if (!data || typeof data.ready !== 'boolean' || typeof data.url !== 'string' || typeof data.title !== 'string') throw Error('Invalid Safari load result.');
+      lastUrl = data.url;
+      if (data.ready) {
+        this.target(t);
+        const result = { ...t, url: data.url, title: data.title,
+          note: 'Page reached readyState complete at the exact expected URL. URL/title checks only, not document identity.' };
+        bound(result); return result;
+      }
+      if (Date.now() >= until) throw Error(`Safari load wait timed out; ${expectedUrl} did not reach readyState complete (last observed URL: ${lastUrl}). Inspect tabs before retrying.`);
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => { clearTimeout(timer); reject(Error('Safari load wait cancelled.')); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, Math.min(200, until - Date.now()));
+        signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
+      });
+    }
   }
   dialog(t: Target, action: 'list' | 'respond' | 'dismiss', inputText?: string, signal?: AbortSignal) {
     return this.operation(s => this.dialogData(t, action, inputText, s), signal);

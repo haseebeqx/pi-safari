@@ -13,6 +13,10 @@ export function webURL(url: string): string {
 export function readyJS(expectedUrl: string): string {
   return `location.href===${JSON.stringify(expectedUrl)} && document.readyState==='complete'`;
 }
+export function loadedJS(expectedUrl: string): string {
+  webURL(expectedUrl);
+  return `JSON.stringify({ready:${readyJS(expectedUrl)},url:location.href.slice(0,2048),title:document.title.slice(0,300)})`;
+}
 // This script only extracts data. It never clicks, dispatches events, sets markers,
 // or navigates the source context, regardless of its provenance or replacement.
 export function linkJS(selector: string, expectedUrl: string): string {

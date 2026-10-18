@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Safari, uploadJS } from '../src/safari.ts';
-import { webURL, readJS, linkJS, bound } from '../src/extraction.ts';
+import { webURL, readJS, linkJS, bound, loadedJS } from '../src/extraction.ts';
 import type { Transport, ToolReply } from '../src/mcp.ts';
 const reply = (data: unknown): ToolReply => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 class Browser implements Transport {
@@ -183,6 +183,67 @@ test('open and wait fail fast when a modal dialog blocks the tab', async () => {
   const b2 = new Browser(); b2.dialogs = [{ message: 'Modal!' }];
   const s2 = new Safari(b2, () => {});
   await assert.rejects(s2.wait(target, 'https://example.com/', { text: 'x' }, 1000), /modal JavaScript dialog/);
+});
+
+test('load wait validates URL and timeout bounds before transport calls', () => {
+  const b = new Browser(), s = new Safari(b, () => {});
+  assert.throws(() => s.waitNavigation(target, 'file:///tmp/x'));
+  for (const ms of [-1, 10001, 2.5, '5000' as any]) assert.throws(() => s.waitNavigation(target, 'https://example.com/', ms));
+  assert.equal(b.calls.length, 0);
+});
+test('load-wait script enforces exact URL, complete state and bounded title', () => {
+  const mk = (href: string, readyState: string, title: string) => ({ location: { href }, document: { title, readyState } });
+  const expr = loadedJS('https://example.com/');
+  assert.equal(JSON.parse(vm.runInNewContext(expr, mk('https://example.com/', 'complete', 'Done'))).ready, true);
+  assert.equal(JSON.parse(vm.runInNewContext(expr, mk('https://example.com/', 'loading', 'Done'))).ready, false);
+  assert.equal(JSON.parse(vm.runInNewContext(expr, mk('https://example.com/', 'interactive', 'Done'))).ready, false);
+  assert.equal(JSON.parse(vm.runInNewContext(expr, mk('https://other.example/', 'complete', 'Done'))).ready, false);
+  const long = JSON.parse(vm.runInNewContext(expr, mk('https://example.com/', 'complete', 't'.repeat(500))));
+  assert.equal(long.title.length, 300);
+  assert.throws(() => loadedJS('file:///tmp/x'));
+});
+test('load wait polls until readyState complete and returns final URL and title', async () => {
+  const b = new Browser(); let polls = 0;
+  const original = b.call.bind(b);
+  b.call = async (name, args) => {
+    if (name === 'evaluate_javascript') { polls++; return reply(JSON.stringify({ ready: polls > 2, url: 'https://example.com/', title: 'Loaded' })); }
+    return original(name, args);
+  };
+  const s = new Safari(b, () => {});
+  const data = await s.waitNavigation(target, 'https://example.com/', 1000);
+  assert.equal(polls, 3);
+  assert.equal(data.url, 'https://example.com/');
+  assert.equal(data.title, 'Loaded');
+  assert.match(data.note, /readyState complete/);
+  assert.equal(b.calls.some(c => ['navigate_to_url', 'page_interactions', 'create_tab'].includes(c.name)), false);
+  assert.equal(b.calls.filter(c => c.name === 'list_tabs').length, b.calls.filter(c => c.name === 'switch_tab').length);
+});
+test('load wait resolves immediately for an already-complete document', async () => {
+  const b = new Browser(), s = new Safari(b, () => {});
+  const data = await s.waitNavigation(target, 'https://example.com/');
+  assert.equal(data.url, 'https://example.com/');
+  assert.equal(data.title, 'Example');
+  assert.equal(b.calls.filter(c => c.name === 'evaluate_javascript').length, 1);
+});
+test('load wait times out reporting the last observed URL and cancels without mutation', async () => {
+  const b = new Browser();
+  const original = b.call.bind(b);
+  b.call = async (name, args) => {
+    if (name === 'evaluate_javascript') return reply(JSON.stringify({ ready: false, url: 'https://mid-redirect.example/', title: 'Loading' }));
+    return original(name, args);
+  };
+  const s = new Safari(b, () => {});
+  await assert.rejects(s.waitNavigation(target, 'https://example.com/', 0), /timed out[\s\S]*mid-redirect\.example/);
+  const ac = new AbortController();
+  const pending = s.waitNavigation(target, 'https://example.com/', 10000, ac.signal);
+  setTimeout(() => ac.abort(), 10);
+  await assert.rejects(pending, /cancelled/);
+  assert.equal(b.calls.some(c => ['navigate_to_url', 'page_interactions', 'create_tab'].includes(c.name)), false);
+});
+test('load wait fails fast when a modal dialog blocks the tab', async () => {
+  const b = new Browser(); b.dialogs = [{ message: 'Modal!' }];
+  await assert.rejects(new Safari(b, () => {}).waitNavigation(target, 'https://example.com/', 1000), /modal JavaScript dialog/);
+  assert.equal(b.calls.filter(c => c.name === 'evaluate_javascript').length, 0);
 });
 
 test('upload validates local files and bounds before any transport work', () => {

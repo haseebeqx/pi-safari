@@ -115,6 +115,12 @@ export default function(pi: ExtensionAPI) {
     async execute(_id, args, signal) { return result(await safari.wait(args, args.expectedUrl, args, args.timeoutMs, signal)); },
   });
   pi.registerTool({
+    name: 'safari_wait_for_navigation', label: 'Wait for Safari load',
+    description: 'Block until the named tab reaches readyState complete at the exact expectedUrl - e.g. right after safari_navigate, or through multi-stage redirects that land on the expected URL while still loading. Returns the final URL + title. Polls the target only; no navigation or mutation. timeoutMs 0..10000, default 5000; cancellable. A modal JS dialog fails fast.',
+    parameters: Type.Object({ ...Target, expectedUrl: Type.String({ maxLength: 8192 }), timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 })) }), annotations: { readOnlyHint: true },
+    async execute(_id, args, signal) { return result(await safari.waitNavigation(args, args.expectedUrl, args.timeoutMs, signal)); },
+  });
+  pi.registerTool({
     name: 'safari_navigate', label: 'Navigate Safari tab',
     description: 'Navigate explicit existing target once, after exact expectedUrl check. HTTP(S) only, redirects rejected after navigation (no rollback). Independently checked against the current user task; /safari-permissions allow bypasses task checks. Timeouts may already have navigated: inspect, never blindly replay.',
     parameters: Type.Object({ ...Target, expectedUrl: Type.String({ maxLength: 8192 }), url: Type.String({ maxLength: 8192 }) }),
