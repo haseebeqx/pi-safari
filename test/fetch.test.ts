@@ -12,6 +12,7 @@ class FetchBrowser implements Transport {
     this.calls.push(name);
     if (name === 'create_tab') { this.url = this.redirect ? 'https://other.example/' : String(args.url); return reply({ handle: 'new' }); }
     if (name === 'list_tabs') return reply([{ handle: 'new', url: this.url }]);
+    if (name === 'browser_dialogs') return reply({ dialogs: [] });
     if (name === 'close_tab') { if (this.failClose) throw Error('close failure'); assert.equal(args.handle, 'new'); return text('Closed.'); }
     if (name === 'switch_tab') return text('OK');
     if (name === 'page_info') return reply({ url: this.url });
@@ -34,7 +35,7 @@ test('fetch performs one self-closing new-tab operation and returns no target', 
   assert.equal(data.cleanup.status, 'closed');
   assert.equal(browser.calls.at(-1), 'close_tab');
   assert.equal(browser.calls.filter(n => n === 'create_tab').length, 1);
-  assert.ok(browser.calls.every(n => ['create_tab', 'list_tabs', 'switch_tab', 'page_info', 'evaluate_javascript', 'close_tab'].includes(n)));
+  assert.ok(browser.calls.every(n => ['create_tab', 'list_tabs', 'switch_tab', 'browser_dialogs', 'page_info', 'evaluate_javascript', 'close_tab'].includes(n)));
 });
 test('optional settle wait polls visible presence before extraction', async () => {
   const browser = new FetchBrowser(); const safari = new Safari(browser);

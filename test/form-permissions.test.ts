@@ -27,6 +27,7 @@ class FormTransport implements Transport {
     switch (name) {
       case 'list_tabs': return reply([...this.tabs].map(([handle, url]) => ({ handle, url })));
       case 'switch_tab': this.selected = String(args.handle); return reply('selected');
+      case 'browser_dialogs': return reply({ dialogs: [] });
       case 'page_info': return reply({ url: currentUrl() });
       case 'create_tab': {
         const handle = `new-${this.tabs.size}`;

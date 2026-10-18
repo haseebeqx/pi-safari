@@ -43,12 +43,20 @@ const server = createServer((req, res) => {
     req.on('end', () => { upload = { type: String(req.headers['content-type'] ?? ''), body }; res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>uploaded</title><p>upload-ok</p>'); });
     return;
   }
+  if (req.url?.startsWith('/dialog-prompt')) {
+    res.end(`<!doctype html><title>dialog-prompt</title><h1>dialog fixture</h1><output id="state">initial</output><script>var v=prompt("Fixture prompt","dflt");document.querySelector('#state').textContent='prompt:'+v</script>`);
+    return;
+  }
+  if (req.url?.startsWith('/dialog-confirm')) {
+    res.end(`<!doctype html><title>dialog-confirm</title><h1>dialog fixture</h1><output id="state">initial</output><script>var v=confirm("Fixture confirm");document.querySelector('#state').textContent='confirm:'+v</script>`);
+    return;
+  }
   res.setHeader('Content-Type', req.url?.startsWith('/probe') ? 'text/plain' : 'text/html'); res.end(req.url?.startsWith('/probe') ? 'probe-ok' : fixture);
 });
 await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
 const address = server.address(); assert(address && typeof address !== 'string');
 const base = `http://127.0.0.1:${address.port}`;
-const urls = new Set([base + '/', base + '/next', base + '/navigated']);
+const urls = new Set([base + '/', base + '/next', base + '/navigated', base + '/dialog-prompt', base + '/dialog-confirm']);
 const search = { query: 'Safari web browser', maxResults: 3 };
 const searchURL = searchRequest(search).url;
 const owned = new Map<string, Target>(); const createdURLs = new Map<string, string>(); let selected: string | undefined; let backend: unknown;
@@ -130,6 +138,33 @@ try {
   });
   await check('close', async () => { const t = await mainTab(); assert.equal((await safari.closeTab(t)).status, 'closed'); assert(!(await safari.tabs()).tabs.some(x=>x.targetId===t.targetId)); return 'confirmed absent'; });
   await check('search', async () => { const r = await safari.search(search); assert.equal(r.cleanup.status, 'closed'); assert(r.results.length > 0, 'Provider returned no results (challenge/markup/network possible)'); return r; });
+  await check('dialog.open-fails-fast', async () => {
+    const started = Date.now();
+    await assert.rejects(safari.open(base + '/dialog-prompt'), /modal JavaScript dialog/);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 8000, `Did not fail fast before the transport deadline (${elapsed}ms)`);
+    return { elapsed };
+  });
+  await check('dialog.list+respond', async () => {
+    const t = (await safari.tabs()).tabs.find(x => x.url === base + '/dialog-prompt'); assert(t, 'dialog tab was not left open');
+    const listed = await safari.dialog(t, 'list');
+    assert.equal(listed.dialogs.length, 1); assert.match(listed.dialogs[0].message, /Fixture prompt/);
+    const responded = await safari.dialog(t, 'respond', 'smoke');
+    assert.deepEqual(responded.dialogs, []);
+    const r = await safari.find(t, { selector: '#state' }, true);
+    assert.match(r.matches[0].name, /prompt:smoke/);
+    await safari.closeTab(t); return r.matches[0].name;
+  });
+  await check('dialog.dismiss', async () => {
+    await assert.rejects(safari.open(base + '/dialog-confirm'), /modal JavaScript dialog/);
+    const t = (await safari.tabs()).tabs.find(x => x.url === base + '/dialog-confirm'); assert(t, 'confirm tab was not left open');
+    const r = await safari.dialog(t, 'dismiss');
+    assert.deepEqual(r.dialogs, []);
+    const state = await safari.find(t, { selector: '#state' }, true);
+    assert.match(state.matches[0].name, /confirm:false/);
+    await safari.closeTab(t); return state.matches[0].name;
+  });
+  await check('dialog.none-pending', async () => { const t = await safari.open(base + '/next'); await assert.rejects(safari.dialog(t, 'respond'), /No pending dialog/); await safari.closeTab(t); return 'no dialog'; });
 } finally {
   for (const t of [...owned.values()]) await check('cleanup:'+t.targetId, async () => { const r = await safari.closeTab(t); assert(!(await safari.tabs()).tabs.some(x=>x.targetId===t.targetId)); return r; });
   safari.close(); await new Promise<void>((r,j)=>server.close(e=>e?j(e):r()));

@@ -16,6 +16,7 @@ class Backend implements Transport {
     this.calls.push({ name, args });
     if (name === this.fail) throw Error('backend failed');
     if (name === 'list_tabs') return json([{ handle: 'page-1', url: this.url }]);
+    if (name === 'browser_dialogs') return json({ dialogs: [] });
     if (name === 'page_info') return json({ url: this.url });
     if (name === 'evaluate_javascript') return json(this.result);
     if (name === 'navigate_to_url') this.url = String(args.url);

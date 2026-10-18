@@ -132,6 +132,8 @@ export class Safari {
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
       await this.select(t, signal);
+      const dialogs = await this.listDialogs(signal);
+      if (dialogs.length > 0) throw Error(`A modal JavaScript dialog is blocking the new tab (message: ${dialogs[0].message}). Tab left open; use safari_dialog to respond or dismiss.`);
       const info = await this.call('page_info', {}, signal);
       if (typeof info?.url !== 'string') throw Error('Invalid Safari page info.');
       if (info.url !== normalized && info.url !== 'about:blank') throw Error('Redirect or URL rewrite rejected; tab left open. Inspect tabs before retrying.');
@@ -213,6 +215,11 @@ export class Safari {
   private async waitData(t: Target, expectedUrl: string, expression: string, timeoutMs: number, signal: AbortSignal) {
     const until = Date.now() + timeoutMs;
     while (true) {
+      // A modal JS dialog freezes the page and would hang the poll for the full
+      // transport timeout, killing the connection; fail fast instead.
+      await this.select(t, signal);
+      const dialogs = await this.listDialogs(signal);
+      if (dialogs.length > 0) throw Error(`A modal JavaScript dialog is blocking this tab (message: ${dialogs[0].message}). Use safari_dialog to respond or dismiss, then wait again.`);
       const { data, url } = await this.observe(t, expression, signal);
       if (url !== expectedUrl || typeof data?.matched !== 'boolean') throw Error('Invalid Safari wait result.');
       if (data.matched) return { ...t, url, matched: true };
@@ -228,6 +235,33 @@ export class Safari {
     const expression = waitJS(query, expectedUrl);
     if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 10000) throw Error('timeoutMs must be 0..10000.');
     return this.operation(s => this.waitData(t, expectedUrl, expression, timeoutMs, s), signal);
+  }
+  dialog(t: Target, action: 'list' | 'respond' | 'dismiss', inputText?: string, signal?: AbortSignal) {
+    return this.operation(s => this.dialogData(t, action, inputText, s), signal);
+  }
+  private async dialogData(t: Target, action: string, inputText: string | undefined, signal: AbortSignal) {
+    if (!['list', 'respond', 'dismiss'].includes(action)) throw Error('action must be list, respond or dismiss.');
+    if (inputText !== undefined && (action !== 'respond' || typeof inputText !== 'string' || inputText.length === 0 || inputText.length > 4000)) throw Error('inputText is only for respond and must be 1..4000 characters.');
+    // select() and listDialogs() are driver-level: both work while a modal dialog
+    // freezes the page, unlike page_info or evaluate_javascript.
+    await this.select(t, signal);
+    const pending = await this.listDialogs(signal);
+    if (action === 'list') return this.dialogResult(t, pending, 'listed');
+    if (pending.length === 0) throw Error('No pending dialog on this tab.');
+    await this.mutate('browser_dialogs', inputText === undefined ? { action } : { action, inputText }, signal, true);
+    const remaining = await this.listDialogs(signal);
+    this.target(t);
+    if (!(await this.list(signal)).some(tab => tab.handle === t.targetId)) throw Error('Dialog tab closed; relist tabs.');
+    return this.dialogResult(t, remaining, action);
+  }
+  private async listDialogs(signal: AbortSignal) {
+    const data = await this.call('browser_dialogs', { action: 'list' }, signal);
+    if (!data || !Array.isArray(data.dialogs) || data.dialogs.some((d: unknown) => !d || typeof (d as { message?: unknown }).message !== 'string')) throw Error('Invalid Safari dialog result.');
+    return (data.dialogs as { message: string }[]).map(d => ({ message: d.message.slice(0, 300) }));
+  }
+  private dialogResult(t: Target, dialogs: { message: string }[], action: string) {
+    const data = { ...t, action, dialogs, note: 'Dialogs are reported for the active tab only; this call made the target active first. Messages carry no dialog type or default value. respond accepts (alert accepts, confirm true, prompt accepts the default); inputText answers a prompt with a specific value and is rejected by confirm/alert, leaving them up. dismiss cancels (confirm false, prompt cancel). No page read was made; URL state is unknown.' };
+    bound(data); return data;
   }
   screenshot(t: Target, fullPage = false, signal?: AbortSignal) {
     return this.operation(s => this.checkedBackend(t, 'screenshot', { full_page: fullPage }, s), signal);

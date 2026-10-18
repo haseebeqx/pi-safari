@@ -160,5 +160,12 @@ export default function(pi: ExtensionAPI) {
     parameters: Type.Object({ ...Target, urlSubstring: Type.Optional(Type.String({ maxLength: 500 })) }), annotations: { readOnlyHint: true },
     async execute(_id, args, signal) { return result(await safari.network(args, args.urlSubstring, signal)); },
   });
+  pi.registerTool({
+    name: 'safari_dialog', label: 'Handle Safari JS dialogs',
+    description: 'List or handle native JavaScript dialogs (alert/confirm/prompt) that freeze a tab: while one is up, every other call against that tab hangs until timeout. Acts on the named tab (made active first); dialogs are reported for the active tab only. list is a safe read and returns messages without dialog type or default value. respond accepts the dialog (alert accepts, confirm true, prompt accepts the default); add inputText only for prompts to answer with a specific value - inputText is rejected by confirm/alert and leaves them up. dismiss cancels (confirm false, prompt cancel). No extension permission required, like safari_close. Each call dispatches once; relist tabs after a connection reset.',
+    parameters: Type.Object({ ...Target, action: Type.Union((['list', 'respond', 'dismiss'] as const).map(v => Type.Literal(v))), inputText: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })) }),
+    annotations: { readOnlyHint: false },
+    async execute(_id, args, signal) { return result(await safari.dialog(args, args.action, args.inputText, signal)); },
+  });
 
 }

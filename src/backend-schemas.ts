@@ -1,6 +1,14 @@
 // Verified by initialize + tools/list only, local Safari MCP 1.0.0. No browser actions.
 // Conservative exact schema matching: incompatible optional capabilities fail closed.
 export const BACKEND_SCHEMAS = {
+  "browser_dialogs": {
+    "properties": {
+      "action": { "enum": ["list", "respond", "dismiss"], "type": "string" },
+      "inputText": { "type": "string" }
+    },
+    "required": ["action"],
+    "type": "object"
+  },
   "browser_console_messages": {
     "properties": {
       "clear": {

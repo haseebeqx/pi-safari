@@ -12,6 +12,8 @@ class Browser implements Transport {
   epoch = 'session-1';
   calls: { name: string; args: Record<string, unknown> }[] = [];
   tabs = [{ handle: 'page-1', url: 'https://example.com/' }];
+  dialogs: { message: string }[] = [];
+  dialogActions: { action: string; inputText?: string }[] = [];
   current = 'page-1';
   url = 'https://example.com/';
   result: unknown;
@@ -20,6 +22,12 @@ class Browser implements Transport {
     switch (name) {
       case 'list_tabs': return reply(this.tabs);
       case 'switch_tab': this.current = String(args.handle); return { content: [{ type: 'text', text: 'Switched to tab.' }] };
+      case 'browser_dialogs':
+        if (args.action === 'list') return reply({ dialogs: this.dialogs });
+        if (this.dialogs.length === 0) throw Error('Safari tool failed: No JavaScript dialog is showing');
+        this.dialogActions.push({ action: String(args.action), inputText: args.inputText === undefined ? undefined : String(args.inputText) });
+        this.dialogs = [];
+        return { content: [{ type: 'text', text: args.action === 'dismiss' ? 'Dialog dismissed' : 'Dialog accepted' }] };
       case 'page_info': return reply({ url: this.url, title: 'Example' });
       case 'create_tab': this.url = String(args.url); this.tabs.push({ handle: 'page-2', url: this.url }); return reply({ handle: 'page-2' });
       case 'evaluate_javascript':
@@ -135,6 +143,46 @@ test('new-tab reading is permission-free without enabling arbitrary tab mutation
   const before = b.calls.length;
   await assert.rejects(s.activate(target), /approval/);
   assert.equal(b.calls.length, before);
+});
+
+test('dialog list is a safe read; respond/dismiss dispatch once and verify without page_info', async () => {
+  const b = new Browser(); b.dialogs = [{ message: 'Type secret?' }];
+  const s = new Safari(b, () => { throw Error('no approval needed for dialogs'); });
+  const listed = await s.dialog(target, 'list');
+  assert.equal(listed.action, 'listed');
+  assert.deepEqual(listed.dialogs, [{ message: 'Type secret?' }]);
+  assert.deepEqual(b.calls.map(c => c.name).slice(0, 3), ['list_tabs', 'switch_tab', 'browser_dialogs']);
+  assert.equal(b.calls.filter(c => c.name === 'page_info').length, 0);
+  const responded = await s.dialog(target, 'respond', 'hello');
+  assert.equal(responded.action, 'respond');
+  assert.deepEqual(responded.dialogs, []);
+  const b2 = new Browser(); b2.dialogs = [{ message: 'Sure?' }];
+  const dismissed = await new Safari(b2, () => {}).dialog(target, 'dismiss');
+  assert.equal(dismissed.action, 'dismiss');
+  assert.deepEqual(b2.dialogActions, [{ action: 'dismiss', inputText: undefined }]);
+  assert.deepEqual(b.dialogActions, [{ action: 'respond', inputText: 'hello' }]);
+  assert.equal(b.calls.filter(c => c.name === 'browser_dialogs' && c.args.action === 'respond').length, 1);
+});
+
+test('dialog respond/dismiss fail fast without a pending dialog; inputText is respond-only', async () => {
+  const b = new Browser(), s = new Safari(b, () => {});
+  await assert.rejects(s.dialog(target, 'respond'), /No pending dialog/);
+  await assert.rejects(s.dialog(target, 'dismiss'), /No pending dialog/);
+  assert.equal(b.dialogActions.length, 0);
+  await assert.rejects(s.dialog(target, 'list', 'x'), /inputText is only for respond/);
+  await assert.rejects(s.dialog(target, 'dismiss', 'x'), /inputText is only for respond/);
+  await assert.rejects(s.dialog(target, 'respond', 'x'.repeat(4001)), /1\.\.4000/);
+  await assert.rejects(s.dialog(target, 'bogus' as any), /action must be/);
+});
+
+test('open and wait fail fast when a modal dialog blocks the tab', async () => {
+  const b = new Browser(); b.dialogs = [{ message: 'Modal!' }];
+  const s = new Safari(b, () => {});
+  await assert.rejects(s.open('https://example.com/'), /modal JavaScript dialog/);
+  assert.equal(b.calls.filter(c => c.name === 'create_tab').length, 1);
+  const b2 = new Browser(); b2.dialogs = [{ message: 'Modal!' }];
+  const s2 = new Safari(b2, () => {});
+  await assert.rejects(s2.wait(target, 'https://example.com/', { text: 'x' }, 1000), /modal JavaScript dialog/);
 });
 
 test('upload validates local files and bounds before any transport work', () => {

@@ -92,7 +92,7 @@ export class SafariMCP implements Transport {
     const next = this.queue.then(async () => {
       if (signal?.aborted) throw Error('Safari operation cancelled.');
       clearTimeout(this.idle);
-      const abort = () => this.stop(Error('Safari deadline/cancellation; relist tabs and inspect before retrying an open.'));
+      const abort = () => this.stop(Error('Safari deadline/cancellation; the page may be frozen by a modal JS dialog (alert/confirm/prompt) - relist tabs and try safari_dialog before retrying an open.'));
       const timer = setTimeout(abort, this.options.timeout ?? 20000);
       signal?.addEventListener('abort', abort, { once: true });
       try {

@@ -52,6 +52,7 @@ class SearchBrowser implements Transport {
     this.calls.push(name);
     if (name === 'create_tab') { this.url = this.redirect ? 'https://other.example/' : String(args.url); return reply({ handle: 'new' }); }
     if (name === 'list_tabs') return reply([{ handle: 'new', url: this.url }]);
+    if (name === 'browser_dialogs') return reply({ dialogs: [] });
     if (name === 'close_tab') { assert.equal(args.handle, 'new'); return { content: [{ type: 'text' as const, text: 'Closed.' }] }; }
     if (name === 'switch_tab') return { content: [{ type: 'text' as const, text: 'OK' }] };
     if (name === 'page_info') return reply({ url: this.url });
@@ -71,7 +72,7 @@ test('search performs one new-tab operation and preserves fail-closed identity/n
   assert.equal(data.results.length, 1); assert.equal('targetId' in data, false); assert.equal('epoch' in data, false); assert.equal(data.cleanup.status, 'closed');
   assert.equal(browser.calls.at(-1), 'close_tab');
   assert.equal(browser.calls.filter(n => n === 'create_tab').length, 1);
-  assert.ok(browser.calls.every(n => ['create_tab', 'list_tabs', 'switch_tab', 'page_info', 'evaluate_javascript', 'close_tab'].includes(n)));
+  assert.ok(browser.calls.every(n => ['create_tab', 'list_tabs', 'switch_tab', 'browser_dialogs', 'page_info', 'evaluate_javascript', 'close_tab'].includes(n)));
   for (const flag of ['redirect', 'changed', 'malformed'] as const) {
     const b = new SearchBrowser(); b[flag] = true;
     await assert.rejects(new Safari(b, () => {}).search({ query: request.query, region: 'uk-en', time: 'w', maxResults: 2 }));
