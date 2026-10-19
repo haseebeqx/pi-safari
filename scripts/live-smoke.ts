@@ -57,7 +57,7 @@ await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
 const address = server.address(); assert(address && typeof address !== 'string');
 const base = `http://127.0.0.1:${address.port}`;
 const urls = new Set([base + '/', base + '/next', base + '/navigated', base + '/dialog-prompt', base + '/dialog-confirm']);
-const search = { query: 'Safari web browser', maxResults: 3 };
+const search = { query: 'Safari web browser' };
 const searchURL = searchRequest(search).url;
 const owned = new Map<string, Target>(); const createdURLs = new Map<string, string>(); let selected: string | undefined; let backend: unknown;
 const native = new SafariMCP({ spawn: ((...args: Parameters<typeof spawn>) => {

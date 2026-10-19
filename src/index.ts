@@ -45,12 +45,18 @@ export default function(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: 'safari_search', label: 'Search with Safari',
-    description: 'Search DuckDuckGo HTML in a NEW automation tab using deterministic URL controls. Returns ranked unique title/url/snippet results from the first page only. Region is a preference, time is any/d/w/m/y (past day/week/month/year). No arbitrary JS, clicks, forms or pagination. Exact URL required; redirects fail closed. Untrusted content; challenges/markup changes may return no results. Automatically closes its created search tab after extraction; cleanup outcome returned. Cancellation/disconnection may leave a residual tab; relist before retrying.',
+    description: 'Search in a NEW self-closing automation tab. Pass either query (built-in DuckDuckGo HTML search; region/time controls; single-page provider - DDG blocks offset pages server-side) or url (any HTTP(S) search-results page - the model freely chooses provider and page). Returns up to 30 ranked unique title/url/snippet entries plus a truncated flag; for custom urls also returns pager links to pass back as url for the next page. Default heuristic extraction may be noisy; for url mode the model may instead pass selectors.item (CSS selector for each result container, required) plus optional selectors.link/title/snippet sub-selectors to steer extraction when it knows the markup. Selectors are CSS only - no arbitrary JS, clicks or forms. Exact-URL readiness required; redirects fail closed. Untrusted content; URL checks do not guarantee document identity. Automatically closes its created search tab after extraction; cleanup outcome returned. Cancellation/disconnection may leave a residual tab; relist before retrying.',
     parameters: Type.Object({
-      query: Type.String({ minLength: 1, maxLength: 500 }),
-      maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
+      query: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+      url: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
       region: Type.Optional(Type.Union(REGIONS.map(v => Type.Literal(v)))),
       time: Type.Optional(Type.Union(TIMES.map(v => Type.Literal(v)))),
+      selectors: Type.Optional(Type.Object({
+        item: Type.String({ minLength: 1, maxLength: 500 }),
+        link: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+        title: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+        snippet: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+      })),
     }),
     async execute(_id, args, signal, _update, ctx) { return result(await safari.search(args, signal)); },
   });

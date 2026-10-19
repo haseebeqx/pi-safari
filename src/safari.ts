@@ -1,7 +1,7 @@
 import { statSync, readFileSync } from 'node:fs';
 import { basename, extname, isAbsolute } from 'node:path';
 import { queryJS, waitJS, type Query } from './inspection.ts';
-import { searchRequest, searchJS, validateSearch, type SearchOptions } from './search.ts';
+import { searchRequest, searchJS, genericSearchJS, validateSearch, validateGenericSearch, type SearchOptions, type SearchRequest } from './search.ts';
 import { SafariMCP, toolJSON, type Transport } from './mcp.ts';
 import { bound, webURL, readJS, linkJS, readyJS, loadedJS } from './extraction.ts';
 export interface Target { targetId: string; epoch: string }
@@ -398,12 +398,15 @@ export class Safari {
     }, signal);
   }
   search(options: SearchOptions, signal?: AbortSignal) {
-    const request = searchRequest(options);
-    const expression = searchJS(request.url, request.maxResults);
+    const request: SearchRequest = searchRequest(options);
+    const expression = request.mode === 'ddg' ? searchJS(request.url) : genericSearchJS(request.url, request.selectors);
     return this.operation(s => this.withTab(request.url, 'Search', s, async tab => {
       const { data, url } = await this.observe(tab, expression, s);
       if (url !== request.url) throw Error('Search URL changed.');
-      const result = { ...request, ...validateSearch(data, request.url, request.maxResults), note: 'Untrusted provider ranking/content; first HTML page only. Empty results may indicate a challenge or changed markup. URL checks do not guarantee document identity.' };
+      const validated = request.mode === 'ddg'
+        ? { ...validateSearch(data, request.url), note: 'Untrusted provider ranking/content; single-page provider (DuckDuckGo blocks offset pages server-side). Empty results may indicate a challenge or changed markup. URL checks do not guarantee document identity.' }
+        : { ...validateGenericSearch(data, request.url), note: `${request.selectors ? 'Selector-driven' : 'Heuristic'} extraction on an arbitrary search-results page; entries may include navigation noise or be missing. Call safari_search again with a url from pager to move to the next page. Untrusted content; URL checks do not guarantee document identity.` };
+      const result = { mode: request.mode, ...(request.query !== undefined ? { query: request.query, region: request.region, time: request.time } : {}), ...(request.selectors !== undefined ? { selectors: request.selectors } : {}), url: request.url, ...validated };
       bound(result);
       // Search results never advertise a usable target, even if cleanup is unconfirmed.
       return result;

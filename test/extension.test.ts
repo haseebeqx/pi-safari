@@ -19,7 +19,12 @@ test('registration and lifecycle; mutations fail closed without launching Safari
   assert.deepEqual(Object.keys(tools.get('safari_wait_for_navigation').parameters.properties), ['targetId', 'epoch', 'expectedUrl', 'timeoutMs']);
   assert.equal(tools.has('safari_request_scope'), false);
   assert.equal(tools.get('safari_read').parameters.properties.maxChars.maximum, 12000);
-  assert.equal(tools.get('safari_search').parameters.properties.maxResults.maximum, 10);
+  const searchParams = tools.get('safari_search').parameters.properties;
+  assert.deepEqual(Object.keys(searchParams), ['query', 'url', 'region', 'time', 'selectors']);
+  assert.deepEqual(Object.keys(searchParams.selectors.properties), ['item', 'link', 'title', 'snippet']);
+  assert.deepEqual(searchParams.selectors.required, ['item']);
+  assert.equal(searchParams.url.type, 'string');
+  assert.equal(searchParams.url.maxLength, 8192);
   assert.equal(tools.get('safari_fetch').parameters.properties.maxChars.maximum, 12000);
   assert.equal(tools.get('safari_fetch').parameters.properties.timeoutMs.maximum, 10000);
   assert.deepEqual(Object.keys(tools.get('safari_snapshot').parameters.properties), ['targetId', 'epoch', 'entirePage', 'media']);
