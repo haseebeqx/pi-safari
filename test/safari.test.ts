@@ -246,6 +246,50 @@ test('load wait fails fast when a modal dialog blocks the tab', async () => {
   assert.equal(b.calls.filter(c => c.name === 'evaluate_javascript').length, 0);
 });
 
+test('evaluate validates URL and bounds and fails closed without the standalone grant', async () => {
+  const b = new Browser(), s = new Safari(b, () => {});
+  await assert.rejects(s.evaluate(target, 'https://example.com/', '1+1'), /standalone/);
+  const s2 = new Safari(b, () => {}, () => {});
+  for (const expression of ['', 'x'.repeat(8001), 5 as any]) assert.throws(() => s2.evaluate(target, 'https://example.com/', expression), /1\.\./);
+  assert.throws(() => s2.evaluate(target, 'file:///tmp/x', '1+1'));
+  await assert.rejects(s2.evaluate({ ...target, epoch: 'old' }, 'https://example.com/', '1+1'), /stale/);
+  assert.equal(b.calls.length, 0);
+});
+test('evaluate checks the exact URL, dispatches once, and reports the post-evaluation URL', async () => {
+  const b = new Browser(); b.result = 2;
+  const out = await new Safari(b, () => {}, () => {}).evaluate(target, 'https://example.com/', '1+1');
+  assert.equal(out.value, '2'); assert.equal(out.truncated, false);
+  assert.equal(out.url, 'https://example.com/');
+  assert.match(out.note, /executed once/);
+  assert.deepEqual(b.calls.map(c => c.name), ['list_tabs', 'switch_tab', 'page_info', 'evaluate_javascript', 'page_info', 'list_tabs']);
+  assert.equal(String(b.calls[3].args.expression), 'return (1+1);');
+  // Navigation by the expression is reported in url, not an error.
+  const b3 = new Browser(), call = b3.call.bind(b3); b3.result = 'nav';
+  b3.call = async (name, args) => { const r = await call(name, args); if (name === 'evaluate_javascript') b3.url = 'https://changed.example/'; return r; };
+  const moved = await new Safari(b3, () => {}, () => {}).evaluate(target, 'https://example.com/', 'location.href');
+  assert.equal(moved.url, 'https://changed.example/');
+  // A closed tab is reported; oversized results are truncated with a flag.
+  const b4 = new Browser(), call4 = b4.call.bind(b4); b4.result = 'v'.repeat(13000);
+  b4.call = async (name, args) => { const r = await call4(name, args); if (name === 'evaluate_javascript') b4.tabs = []; return r; };
+  await assert.rejects(new Safari(b4, () => {}, () => {}).evaluate(target, 'https://example.com/', '1'), /closed or lost/);
+  const b5 = new Browser(); b5.result = 'v'.repeat(13000);
+  const big = await new Safari(b5, () => {}, () => {}).evaluate(target, 'https://example.com/', '1');
+  assert.equal(big.value.length, 12000); assert.equal(big.truncated, true);
+  // Wrong source URL rejects before any evaluation.
+  const b6 = new Browser(); b6.url = 'https://other.example/';
+  await assert.rejects(new Safari(b6, () => {}, () => {}).evaluate(target, 'https://example.com/', '1'), /Source URL changed/);
+  assert.equal(b6.calls.filter(c => c.name === 'evaluate_javascript').length, 0);
+});
+test('grant revoked before dispatch is not replayed', async () => {
+  const b = new Browser(); b.result = 'x';
+  const raw = b.call.bind(b);
+  (b as any).call = async (name: string, args: any, _signal?: AbortSignal, before?: () => void) => { before?.(); return raw(name, args); };
+  let checks = 0;
+  const s = new Safari(b, () => {}, () => { if (++checks > 1) throw Error('retired grant'); });
+  await assert.rejects(s.evaluate(target, 'https://example.com/', '1+1'), /retired/);
+  assert.equal(b.calls.length, 3); // list_tabs, switch_tab, page_info
+  assert.equal(b.calls.filter(c => c.name === 'evaluate_javascript').length, 0);
+});
 test('upload validates local files and bounds before any transport work', () => {
   const dir = mkdtempSync(join(tmpdir(), 'safari-upload-'));
   const file = join(dir, 'notes.txt'); writeFileSync(file, 'hello upload');

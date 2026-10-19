@@ -34,6 +34,31 @@ export async function arbitrate(ctx: Context, request: string, proposal: Proposa
   } catch { return { approved: false, usage: response.usage }; }
 }
 
+/**
+ * Standalone JavaScript-evaluation grant. Deliberately separate from the
+ * restricted-action tier: task approval and /safari-permissions allow never
+ * imply it, and it implies no other permission. Memory-only; interactive TUI
+ * command only.
+ */
+export class EvaluationGrant {
+  private allowed = false;
+  reset() { this.allowed = false; }
+  require(ctx?: Pick<ExtensionContext, 'mode' | 'hasUI'>) {
+    if (!this.allowed) throw Error('Safari JavaScript evaluation disabled: no /safari-evaluate allow grant. It is a standalone tier; /safari-permissions allow and task approval do not cover it.');
+    if (ctx && (ctx.mode !== 'tui' || !ctx.hasUI)) throw Error('Safari JavaScript evaluation disabled in noninteractive contexts; use an interactive Pi terminal.');
+  }
+  private interactive(ctx: Pick<ExtensionContext, 'mode' | 'hasUI'> | undefined): asserts ctx {
+    if (!ctx || ctx.mode !== 'tui' || !ctx.hasUI) throw Error('Safari JavaScript evaluation disabled in noninteractive contexts; use an interactive Pi terminal.');
+  }
+  async command(args: string, ctx: Context) {
+    if (args.trim() === 'revoke') { this.allowed = false; ctx.ui.notify('Safari JavaScript evaluation permission revoked.', 'info'); return; }
+    if (args.trim() !== 'allow') throw Error('Usage: /safari-evaluate allow|revoke');
+    this.interactive(ctx);
+    this.allowed = true;
+    ctx.ui.notify('Safari JavaScript evaluation enabled for this session. /safari-evaluate revoke to revoke.', 'info');
+  }
+}
+
 /** Memory-only grants, never reconstructed from session content. Each mutation is judged independently. */
 export class SessionApproval {
   private allowed = false;

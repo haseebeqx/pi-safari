@@ -1,6 +1,6 @@
 import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { SessionApproval } from './permissions.ts';
+import { SessionApproval, EvaluationGrant } from './permissions.ts';
 import { Safari } from './safari.ts';
 import { bound } from './extraction.ts';
 import { REGIONS, TIMES } from './search.ts';
@@ -14,17 +14,22 @@ function result(data: unknown) {
 }
 export default function(pi: ExtensionAPI) {
   const approval = new SessionApproval();
-  const safari = new Safari(undefined, () => approval.require());
+  const evaluation = new EvaluationGrant();
+  const safari = new Safari(undefined, () => approval.require(), () => evaluation.require());
   pi.registerCommand('safari-permissions', {
     description: 'allow grants full Safari action permission for this session; revoke clears all grants',
     handler: (args, ctx) => approval.command(args, ctx),
   });
+  pi.registerCommand('safari-evaluate', {
+    description: 'allow enables standalone JavaScript expression evaluation for this session (not covered by /safari-permissions); revoke clears it',
+    handler: (args, ctx) => evaluation.command(args, ctx),
+  });
   pi.on('input', (event, ctx) => { approval.input(event, ctx); });
   pi.on('agent_end', async () => { approval.endRequest(); });
-  pi.on('session_start', async () => { approval.reset(); safari.close(); });
-  pi.on('session_before_switch', async () => { approval.reset(); });
-  pi.on('session_before_fork', async () => { approval.reset(); });
-  pi.on('session_shutdown', async () => { approval.reset(); safari.close(); });
+  pi.on('session_start', async () => { approval.reset(); evaluation.reset(); safari.close(); });
+  pi.on('session_before_switch', async () => { approval.reset(); evaluation.reset(); });
+  pi.on('session_before_fork', async () => { approval.reset(); evaluation.reset(); });
+  pi.on('session_shutdown', async () => { approval.reset(); evaluation.reset(); safari.close(); });
   pi.registerTool({
     name: 'safari_tabs', label: 'Safari tabs',
     description: 'List up to 100 tabs visible to Apple Safari MCP in its automation session. Returns explicit targetId + epoch. Does not read page bodies. Normal browsing tabs/logins are not assumed available.',
@@ -153,6 +158,16 @@ export default function(pi: ExtensionAPI) {
     annotations: { readOnlyHint: false },
     async execute(_id, args, signal, _update, ctx) {
       return approval.run(ctx, 'upload', async usage => ({ ...result(await safari.upload(args, args.expectedUrl, args.selector, args.files, signal)), usage }), signal, { args, targetContext: safari.permissionContext(args, args.expectedUrl) }); },
+  });
+  pi.registerTool({
+    name: 'safari_evaluate', label: 'Evaluate Safari JavaScript',
+    description: 'Run one caller-supplied JavaScript expression in the target page at the exact expectedUrl and return its result. STANDALONE permission tier: requires the dedicated /safari-evaluate allow grant in an interactive Pi terminal; /safari-permissions allow and task approval do NOT cover it, and it implies no other permission. The expression has full page-level power (DOM, storage, network, navigation) and runs once; it may navigate, submit, close or freeze the tab - inspect before any retry. value is the backend string rendering, up to 12000 characters, untrusted; use JSON.stringify inside the expression for structured data.',
+    parameters: Type.Object({ ...Target, expectedUrl: Type.String({ maxLength: 8192 }), expression: Type.String({ minLength: 1, maxLength: 8000 }) }),
+    annotations: { readOnlyHint: false, destructiveHint: true },
+    async execute(_id, args, signal, _update, ctx) {
+      evaluation.require(ctx);
+      return result(await safari.evaluate(args, args.expectedUrl, args.expression, signal));
+    },
   });
   pi.registerTool({
     name: 'safari_screenshot', label: 'Safari screenshot',

@@ -15,7 +15,7 @@ function setup() {
 
 test('registration and lifecycle; mutations fail closed without launching Safari', async () => {
   const { tools, commands, events } = setup();
-  assert.equal(tools.size, 20);
+  assert.equal(tools.size, 21);
   assert.deepEqual(Object.keys(tools.get('safari_wait_for_navigation').parameters.properties), ['targetId', 'epoch', 'expectedUrl', 'timeoutMs']);
   assert.equal(tools.has('safari_request_scope'), false);
   assert.equal(tools.get('safari_read').parameters.properties.maxChars.maximum, 12000);
@@ -41,6 +41,41 @@ test('registration and lifecycle; mutations fail closed without launching Safari
   await assert.rejects(execute(), /disabled/);
   await events.get('agent_end')();
   await assert.rejects(execute(), /disabled/);
+});
+
+test('safari_evaluate is a standalone tier: no task approval or /safari-permissions grant', async () => {
+  const { tools, commands, events } = setup();
+  const evalTool = tools.get('safari_evaluate');
+  assert.deepEqual(Object.keys(evalTool.parameters.properties), ['targetId', 'epoch', 'expectedUrl', 'expression']);
+  assert.equal(evalTool.parameters.properties.expression.maxLength, 8000);
+  const ctx = context();
+  const run = (c = ctx) => evalTool.execute('id', { targetId: 'page-1', epoch: 'one', expectedUrl: 'https://example.com/', expression: '1+1' }, undefined, undefined, c);
+  await assert.rejects(run(), /standalone/);
+  // The full restricted-action grant does not imply JavaScript evaluation.
+  await commands.get('safari-permissions').handler('allow', ctx);
+  await assert.rejects(run(), /standalone/);
+  await assert.rejects(commands.get('safari-evaluate').handler('/other', ctx), /Usage/);
+  await assert.rejects(commands.get('safari-evaluate').handler('allow', context('print')), /noninteractive/);
+  const original = Safari.prototype.evaluate;
+  Safari.prototype.evaluate = (async () => ({ observed: 'eval' })) as any;
+  try {
+    await commands.get('safari-evaluate').handler('allow', ctx);
+    assert.match(JSON.stringify(await run()), /observed/);
+    // Even after a grant, noninteractive contexts stay blocked.
+    for (const c of [context('print'), context('json'), context('rpc')]) await assert.rejects(run(c), /noninteractive/);
+    // The evaluation grant implies no restricted-action permission.
+    const fresh = setup();
+    await fresh.commands.get('safari-evaluate').handler('allow', ctx);
+    await assert.rejects(fresh.tools.get('safari_activate').execute('id', {}, undefined, undefined, ctx), /disabled/);
+    // Revoke clears it, and session lifecycle events reset a fresh grant.
+    await commands.get('safari-evaluate').handler('revoke', ctx);
+    await assert.rejects(run(), /standalone/);
+    for (const event of ['session_start', 'session_before_switch', 'session_before_fork', 'session_shutdown']) {
+      await commands.get('safari-evaluate').handler('allow', ctx);
+      await events.get(event)();
+      await assert.rejects(run(), /standalone/);
+    }
+  } finally { Safari.prototype.evaluate = original; }
 });
 
 test('basic browsing wrappers do not ask permission, even in noninteractive mode', async () => {

@@ -34,7 +34,7 @@ Listing tabs, opening new HTTP(S) tabs, searching, following links into new tabs
 Explicit tab activation, navigating an existing tab, and **click, type, keyPress, hover and file upload** require an interactive Pi terminal and either:
 
 - **Task-scoped approval (default):** an independent, tool-less model classifies each exact proposed action against your current interactive request. There is no extra extension confirmation dialog. Repeated actions needed for the same task are allowed; approval is not consumed after one field.
-- **Full-session permission:** enter the dedicated command **`/safari-permissions allow`**. It grants permission immediately, without another confirmation, and bypasses the task classifier for restricted actions. It does **not** bypass Safari settings, target/URL validation or tool limits.
+- **Full-session permission:** enter the dedicated command **`/safari-permissions allow`**. It grants permission immediately, without another confirmation, and bypasses the task classifier for restricted actions. It does **not** bypass Safari settings, target/URL validation or tool limits, and it does **not** grant JavaScript evaluation—that is a separate tier below.
 
 Only the dedicated command grants full permission—not a mention in a prompt, webpage, tool argument or saved conversation. Use **`/safari-permissions revoke`** to clear both full permission and the current task permission. It cancels pending permission decisions but cannot undo actions already sent to Safari.
 
@@ -47,6 +47,7 @@ Only the dedicated command grants full permission—not a mention in a prompt, w
 | “Fill those fields and submit the form.” | Matching fills and submission can be approved when the target/effect is sufficiently clear. |
 | “Click this button” with unclear context | The classifier should deny rather than guess. Clarify the control and intended effect. |
 | “Allow all Safari actions for this session.” | Does not enable full-session permission. Use `/safari-permissions allow`. |
+| “Evaluate this JavaScript in the page.” | Task approval does not cover JavaScript evaluation; it requires the dedicated `/safari-evaluate allow`. |
 
 Filling is **not** permission to send, buy, delete, sign in or otherwise commit. Enter/Return and even newlines can submit; field changes can trigger site handlers. The classifier considers exact values, target and available context, not just an action’s claimed purpose.
 
@@ -57,6 +58,14 @@ Filling is **not** permission to send, buy, delete, sign in or otherwise commit.
 - **Print/JSON/RPC and other noninteractive contexts block restricted actions**, even with a prior interactive full grant. Always-allowed tools and scroll remain available.
 - Each task check adds model latency/cost. It uses Pi’s current model with request-time authentication, no tools and no conversation history. The current request, proposed action/values and any matching cached snapshot context go to the configured provider. Missing model/authentication, errors, malformed replies, uncertainty or a **15-second classifier timeout** block the action.
 - **Semantic classification is probabilistic, not a deterministic security boundary.** It can misunderstand intent or adversarial text. Cached context may be stale or absent; it does not prove node identity or event-handler effects. Review sensitive operations. This extension is not a sandbox against other installed extensions or Pi tools; earlier extensions can transform input events.
+
+### JavaScript evaluation: standalone tier
+
+Running caller-supplied JavaScript in a tab is a deliberately separate permission tier. Arbitrary expression evaluation cannot be meaningfully classified against a task, so there is no classifier path for it: **task-scoped approval and `/safari-permissions allow` do not cover it, and granting it implies no other permission.**
+
+Enable it with the dedicated command **`/safari-evaluate allow`** (interactive Pi terminal only) and clear it with **`/safari-evaluate revoke`**. Like all Safari permissions it is memory-only and resets on session start, switch, fork, reload or shutdown; it cannot be granted from a prompt, webpage, tool argument or saved conversation.
+
+An expression has full page-level power—DOM, storage, network, navigation—and runs once with the page's credentials; it may navigate, submit, close or freeze the tab. `safari_evaluate` checks the exact `expectedUrl` before running, reports the post-evaluation URL (a difference means the expression navigated or the page redirected), returns the backend string rendering of the result capped at 12000 characters (use `JSON.stringify` inside the expression for structured data), and is never automatically retried. Inspect before any retry.
 
 ## Tool reference
 
@@ -92,6 +101,12 @@ Use the exact **`targetId` and `epoch`** returned by `safari_tabs` or `safari_op
 | `safari_navigate` | `expectedUrl`, `url` | Navigates an existing target once after checking its source URL. HTTP(S) only. Destination redirects are rejected **after navigation**, with no rollback. |
 | `safari_interact` **click, type, keyPress, hover** | `expectedUrl`, `action` | One native action, checked against the current task unless full permission is enabled. May submit or navigate; never automatically retried. |
 | `safari_upload` | `expectedUrl`, `selector`, `purpose`, `files` | Attaches existing local files (absolute paths; 1–10 files, 10 MiB each) to exactly one `<input type=file>` and posts its enclosing form as multipart to the form action URL via fetch, including all other form fields. The form must use `method=post`; the page does not navigate and the response status/body preview is returned. The receiving server gets the file contents. With no enclosing form, files attach but nothing posts. A fill task does not authorize an upload. Never automatically retried. |
+
+### JavaScript evaluation tools (standalone tier)
+
+| Tool | Inputs besides target | Behavior / limits |
+|---|---|---|
+| `safari_evaluate` | `expectedUrl`, `expression` | Runs one caller-supplied JavaScript expression (1–8000 characters) in the target page after checking the exact source URL. Returns the backend string rendering of the result (`value`, up to 12000 characters, untrusted) and the post-evaluation `url`. May navigate, submit, close or freeze the tab; never automatically retried. Requires the standalone `/safari-evaluate allow` grant; `/safari-permissions allow` does not provide it. |
 
 ### Interaction format
 
@@ -141,7 +156,7 @@ A page `alert`, `confirm` or `prompt` blocks the tab: `safari_read`, `safari_fin
 - **Stale state:** handles belong to a connection epoch. Disconnects, interrupted driver requests and five minutes of inactivity can retire it; relist afterward. Same-URL reloads/document replacements, live DOM changes, stale UIDs and external interference may escape URL checks. Obtain a fresh snapshot after failures; do not blindly replay actions. Independent Pi sessions are not coordinated.
 - **Bounded extraction:** read/find/inspect/wait do not traverse iframes or shadow roots. Find/inspect/wait scan at most 2000 elements/matches. Text matching is case-insensitive substring matching, not full accessible-name computation; ancestors may match. Wait can miss content beyond the scan bound.
 - **Output and time:** operations are serialized with a 20-second work deadline; search cleanup has up to 3 extra seconds. A tab blocked by a modal dialog fails fast with a dialog error instead of waiting out the deadline (new tabs only; on existing tabs the deadline still applies). Native snapshot/console/network/screenshot text is capped at 12000 characters. Overall JSON output is capped at 48 KiB and transport responses at 256 KiB. Reduce read limits or narrow network filters when needed. Native artifact paths are not read automatically.
-- **Not exposed:** arbitrary JavaScript/evaluate, raw backend passthrough, batches, selector/coordinate interaction fallbacks, history controls, viewport emulation, persistent media emulation, element screenshot crops or network interception. Media emulation is available only as the call-scoped `safari_snapshot` `media` parameter, and **screenshot rasterization does not reflect emulated media** (verified byte-identical PNGs under print emulation), so no print preview image is possible. Read-only DOM queries and uploads use fixed generated scripts; uploads support only form file inputs (no native open-panel automation). Dialog detection is active-tab only; the backend cannot list dialogs on other tabs at once.
+- **Not exposed:** raw backend passthrough, batches, selector/coordinate interaction fallbacks, history controls, viewport emulation, persistent media emulation, element screenshot crops or network interception. `safari_evaluate` is the only expression-evaluation surface and is gated by its own standalone permission tier. Media emulation is available only as the call-scoped `safari_snapshot` `media` parameter, and **screenshot rasterization does not reflect emulated media** (verified byte-identical PNGs under print emulation), so no print preview image is possible. Read-only DOM queries and uploads use fixed generated scripts; uploads support only form file inputs (no native open-panel automation). Dialog detection is active-tab only; the backend cannot list dialogs on other tabs at once.
 - **Privacy:** page text, console/network data and exact form values can be sensitive. Observations passed to Pi may go to its model provider; task classification also sends its evidence there. Treat web content and returned artifact paths as untrusted data, never permission or local-file instructions.
 
 ### Troubleshooting
@@ -151,6 +166,7 @@ A page `alert`, `confirm` or `prompt` blocks the tab: `safari_read`, `safari_fin
 | Cannot connect / permission denied | Check Safari version and both developer settings; complete Safari’s own approval. Reload Pi after installation. |
 | “No current trusted task” / arbiter denied or unavailable | Send a fresh, specific idle TUI request naming the action, values and intended effect; check the configured model/authentication. Use full-session permission only deliberately. |
 | Restricted action in print/JSON/RPC | Use an interactive Pi terminal; a full-session grant does not enable these modes. |
+| “JavaScript evaluation disabled” | Use `/safari-evaluate allow` in an interactive Pi terminal. It is a standalone tier: task approval and `/safari-permissions allow` do not cover it. |
 | Stale target / changed URL / timed-out action | Run `safari_tabs`, inspect the actual state and get a fresh snapshot. Do not automatically repeat an action that may already have happened. |
 | Tool call times out on a tab | A modal `alert`/`confirm`/`prompt` may be blocking it: use `safari_dialog` with that tab’s target to list and answer the dialog, then relist state. Never retry the timed-out action. |
 | Redirect rejected | Inspect the resulting tab; use the intended final URL explicitly. Rejection does not undo navigation. |
@@ -193,4 +209,4 @@ Configuration format and file location are client-dependent. Reload/restart your
 claude mcp add safari-mcp -- "/usr/bin/safaridriver" --mcp
 ```
 
-Direct use exposes **Apple’s native MCP tools**, not this extension’s `safari_*` wrappers. The extension’s permission classifier, `/safari-permissions` commands, bounds and safety checks do **not** apply. Your client controls tool approvals; Safari’s own permissions still apply. Capabilities and safety behavior differ from this extension. Do not assume normal Safari tabs or logins are available, and remember that page data sent to your client may reach its model provider.
+Direct use exposes **Apple’s native MCP tools**, not this extension’s `safari_*` wrappers. The extension’s permission classifier, `/safari-permissions` and `/safari-evaluate` commands, bounds and safety checks do **not** apply—`evaluate_javascript` in particular has no standalone tier when used directly. Your client controls tool approvals; Safari’s own permissions still apply. Capabilities and safety behavior differ from this extension. Do not assume normal Safari tabs or logins are available, and remember that page data sent to your client may reach its model provider.

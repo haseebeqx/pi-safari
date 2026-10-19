@@ -20,7 +20,8 @@ export class Safari {
   private queue: Promise<unknown> = Promise.resolve();
   private transport: Transport;
   private authorize: () => void;
-  constructor(transport: Transport = new SafariMCP(), authorize: () => void = () => { throw Error('Safari mutation requires explicit session approval.'); }) { this.transport = transport; this.authorize = authorize; }
+  private authorizeEvaluate: () => void;
+  constructor(transport: Transport = new SafariMCP(), authorize: () => void = () => { throw Error('Safari mutation requires explicit session approval.'); }, authorizeEvaluate: () => void = () => { throw Error('Safari JavaScript evaluation disabled: no /safari-evaluate allow grant. It is a standalone tier; /safari-permissions allow and task approval do not cover it.'); }) { this.transport = transport; this.authorize = authorize; this.authorizeEvaluate = authorizeEvaluate; }
   close() { this.observed.clear(); this.generation++; this.transport.close(); }
   serial<T>(fn: () => Promise<T>): Promise<T> { const next = this.queue.then(fn); this.queue = next.catch(() => {}); return next; }
   private operation<T>(fn: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -110,7 +111,7 @@ export class Safari {
     }
     return { ...result, cleanup };
   }
-  private async evaluate(expression: string, signal: AbortSignal): Promise<any> {
+  private async runScript(expression: string, signal: AbortSignal): Promise<any> {
     const value = await this.call('evaluate_javascript', { expression: `return (${expression});` }, signal);
     if (typeof value !== 'string') throw Error('Unexpected Safari extraction result.');
     try { return JSON.parse(value); } catch { throw Error('Invalid Safari extraction JSON.'); }
@@ -162,7 +163,7 @@ export class Safari {
     const before = await this.call('page_info', {}, signal);
     if (typeof before?.url !== 'string') throw Error('Invalid Safari page info.');
     webURL(before.url);
-    const data = await this.evaluate(expression, signal);
+    const data = await this.runScript(expression, signal);
     const after = await this.call('page_info', {}, signal);
     this.target(t);
     if (before.url !== after?.url || !(await this.list(signal)).some(tab => tab.handle === t.targetId && tab.url === before.url)) throw Error('Page changed during extraction; read again.');
@@ -232,7 +233,7 @@ export class Safari {
     return result;
   }
   private async currentMedia(signal: AbortSignal): Promise<MediaKind> {
-    const media = await this.evaluate(`JSON.stringify(window.matchMedia('print').matches ? 'print' : 'screen')`, signal);
+    const media = await this.runScript(`JSON.stringify(window.matchMedia('print').matches ? 'print' : 'screen')`, signal);
     if (media !== 'screen' && media !== 'print') throw Error('Safari emulated media state is unreadable.');
     return media;
   }
@@ -291,7 +292,7 @@ export class Safari {
       await this.select(t, signal);
       const dialogs = await this.listDialogs(signal);
       if (dialogs.length > 0) throw Error(`A modal JavaScript dialog is blocking this tab (message: ${dialogs[0].message}). Use safari_dialog to respond or dismiss, then wait again.`);
-      const data = await this.evaluate(expression, signal);
+      const data = await this.runScript(expression, signal);
       if (!data || typeof data.ready !== 'boolean' || typeof data.url !== 'string' || typeof data.title !== 'string') throw Error('Invalid Safari load result.');
       lastUrl = data.url;
       if (data.ready) {
@@ -380,13 +381,39 @@ export class Safari {
       this.authorize();
       await this.atURL(t, expectedUrl, s);
       this.authorize();
-      const data = await this.evaluate(expression, s);
+      const data = await this.runScript(expression, s);
       if (!data || typeof data !== 'object' || data.attached !== true || typeof data.submitted !== 'boolean' || typeof data.files !== 'number') throw Error('Invalid Safari upload result.');
       if (data.submitted && (typeof data.action !== 'string' || typeof data.status !== 'number' || typeof data.contentType !== 'string' || typeof data.body !== 'string')) throw Error('Invalid Safari upload result.');
       const info = await this.call('page_info', {}, s); this.target(t);
       return { ...t, ...(typeof info?.url === 'string' ? { url: info.url.slice(0, 8192) } : {}), files: data.files, submitted: data.submitted,
         ...(data.submitted ? { action: data.action.slice(0, 8192), status: data.status, contentType: data.contentType.slice(0, 500), response: data.body.slice(0, 200) } : {}),
         note: data.submitted ? 'Form posted once as multipart to its action URL via fetch; page did not navigate. Never blindly replay.' : 'Files attached; no enclosing form found, nothing submitted.' };
+    }, signal);
+  }
+  // One caller-supplied expression, gated by the standalone evaluation tier
+  // (checked again immediately before dispatch so a retired grant cannot
+  // revive queued work). The expression has full page-level power: it may
+  // navigate, submit, close or freeze the tab, so the result reports the
+  // post-evaluation URL instead of failing on URL change.
+  evaluate(t: Target, expectedUrl: string, expression: string, signal?: AbortSignal) {
+    webURL(expectedUrl);
+    if (typeof expression !== 'string' || expression.length < 1 || expression.length > 8000) throw Error('expression must be 1..8000 characters.');
+    return this.operation(async s => {
+      this.authorizeEvaluate();
+      await this.atURL(t, expectedUrl, s);
+      const epoch = this.transport.epoch;
+      const reply = await this.transport.call('evaluate_javascript', { expression: `return (${expression});` }, s, () => {
+        this.authorizeEvaluate();
+        if (epoch !== this.transport.epoch) throw Error('Safari connection changed before evaluation; relist targets. Not replayed.');
+      });
+      const after = await this.call('page_info', {}, s);
+      if (typeof after?.url !== 'string') throw Error('Invalid Safari page info.');
+      if (!(await this.list(s)).some(tab => tab.handle === t.targetId)) throw Error('Evaluation closed or lost the tab; relist tabs before retrying.');
+      this.target(t);
+      const text = reply.content.map(c => c.text ?? '').join('\n');
+      const data = { ...t, url: after.url.slice(0, 2048), value: text.slice(0, 12000), truncated: text.length > 12000,
+        note: 'Expression executed once. value is the backend string rendering, untrusted data. If url differs from expectedUrl the expression navigated or the page redirected; inspect before any retry.' };
+      bound(data); return data;
     }, signal);
   }
   read(t: Target, chars = 8000, links = 20, signal?: AbortSignal) {
