@@ -312,6 +312,11 @@ class SearchBrowser implements Transport {
     if (name === 'evaluate_javascript') {
       const expression = String(args.expression);
       if (!expression.includes('querySelectorAll')) return reply(true);
+      if (this.redirect) {
+        // Extraction runs on the settled final URL; serve a valid bounded fixture there.
+        const results = [{ rank: 1, title: 'Example', snippet: 'A useful snippet', url: 'https://example.com/' }];
+        return reply(JSON.stringify(expression.includes("'a[href]'") ? { url: this.url, results, pager: [], truncated: false } : { url: this.url, results, truncated: false }));
+      }
       const data = expression.includes("'a[href]'")
         ? genericAnchors(this.genericRows ?? [{ href: 'https://example.com/' }, { href: 'https://page.example/next', text: 'Next' }])(this.url)
         : extract([row('https://example.com/')], this.url);
@@ -337,9 +342,22 @@ test('search performs one new-tab operation and preserves fail-closed identity/n
   assert.equal(generic.results.length, 1); assert.deepEqual((generic as any).pager, ['https://page.example/next']);
   assert.equal('targetId' in generic, false); assert.equal('epoch' in generic, false); assert.equal(generic.cleanup.status, 'closed');
   assert.match(generic.note, /pager/);
-  for (const [flag, options] of [['redirect', { query: request.query, region: 'uk-en', time: 'w' }], ['changed', { query: request.query, region: 'uk-en', time: 'w' }], ['malformed', { query: request.query, region: 'uk-en', time: 'w' }], ['redirect', { url: genericURL }], ['changed', { url: genericURL }], ['malformed', { url: genericURL }]] as const) {
+  for (const [flag, options] of [['changed', { query: request.query, region: 'uk-en', time: 'w' }], ['malformed', { query: request.query, region: 'uk-en', time: 'w' }], ['changed', { url: genericURL }], ['malformed', { url: genericURL }]] as const) {
     const b = new SearchBrowser(); b[flag] = true;
     await assert.rejects(new Safari(b, () => {}).search(options));
+    assert.equal(b.calls.filter(n => n === 'create_tab').length, 1);
+    assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
+  }
+});
+test('search follows HTTP redirects and reports the settled final URL', async () => {
+  for (const [options, requested] of [[{ query: request.query, region: 'uk-en', time: 'w' }, request.url], [{ url: genericURL }, genericURL]] as const) {
+    const b = new SearchBrowser(); b.redirect = true;
+    const data = await new Safari(b, () => {}).search(options);
+    assert.equal(data.url, 'https://other.example/');
+    assert.equal(data.requestedUrl, requested);
+    assert.deepEqual(data.redirects, [requested, 'https://other.example/']);
+    assert.equal(data.results.length, 1);
+    assert.equal(data.cleanup.status, 'closed');
     assert.equal(b.calls.filter(n => n === 'create_tab').length, 1);
     assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
   }

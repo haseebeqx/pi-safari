@@ -5,6 +5,14 @@ import { searchRequest, searchJS, genericSearchJS, validateSearch, validateGener
 import { SafariMCP, toolJSON, type Transport } from './mcp.ts';
 import { bound, webURL, readJS, linkJS, readyJS, loadedJS } from './extraction.ts';
 export interface Target { targetId: string; epoch: string }
+export interface CreatedTab extends Target {
+  url: string;
+  /** Present only when the settled URL differs from the requested one. */
+  requestedUrl?: string;
+  /** Ordered observed chain [requested, ...intermediates, final] on redirect; intermediates are best-effort. */
+  redirects?: string[];
+  note: string;
+}
 export interface FetchOptions { url: string; selector?: string; text?: string; timeoutMs?: number; maxChars?: number; maxLinks?: number }
 export type TabCleanup = { status: 'closed' | 'already-absent' } | { status: 'unidentified' | 'skipped-retired-epoch' | 'failed'; note: string }
 const HANDLE = /^[A-Za-z0-9_-]{1,200}$/;
@@ -90,11 +98,11 @@ export class Safari {
   }
   // One closed new-tab pipeline: create, bounded work, then cleanup on every path.
   // Work must use unwrapped private methods only (create/observe/cleanup), never other operations.
-  private async withTab<T extends object>(url: string, label: string, signal: AbortSignal, work: (tab: Target) => Promise<T>): Promise<T & { cleanup: TabCleanup }> {
+  private async withTab<T extends object>(url: string, label: string, signal: AbortSignal, allowRedirects: boolean, work: (tab: CreatedTab) => Promise<T>): Promise<T & { cleanup: TabCleanup }> {
     let created: Target | undefined;
     let result: T;
     try {
-      const tab = await this.create(url, signal, t => { created = t; });
+      const tab = await this.create(url, signal, t => { created = t; }, allowRedirects);
       result = await work(tab);
       if (signal.aborted) throw Error(`${label} cancelled.`);
     } catch (error) {
@@ -123,7 +131,11 @@ export class Safari {
       bound(result); return result;
     }, signal);
   }
-  private async create(url: string, signal: AbortSignal, identified?: (t: Target) => void) {
+  // allowRedirects: follow the browser's redirects and settle on whatever HTTP(S) URL the
+  // document reaches at readyState complete, reporting requestedUrl + a best-effort redirect
+  // chain. Without it, any URL other than the requested one is rejected (fail closed).
+  // Non-web destinations (data:, about:, ...) and modal dialogs always fail closed.
+  private async create(url: string, signal: AbortSignal, identified?: (t: Target) => void, allowRedirects = false): Promise<CreatedTab> {
     // New-tab read infrastructure only; never exposes arbitrary close/navigation/interaction.
     const normalized = webURL(url);
     const epoch = this.transport.epoch;
@@ -131,6 +143,7 @@ export class Safari {
     if (typeof created?.handle !== 'string' || !HANDLE.test(created.handle)) throw Error('Cannot identify created tab; inspect tabs before retrying.');
     const t = { targetId: created.handle, epoch };
     identified?.(t);
+    const observed: string[] = [normalized];
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
       await this.select(t, signal);
@@ -138,10 +151,22 @@ export class Safari {
       if (dialogs.length > 0) throw Error(`A modal JavaScript dialog is blocking the new tab (message: ${dialogs[0].message}). Tab left open; use safari_dialog to respond or dismiss.`);
       const info = await this.call('page_info', {}, signal);
       if (typeof info?.url !== 'string') throw Error('Invalid Safari page info.');
-      if (info.url !== normalized && info.url !== 'about:blank') throw Error('Redirect or URL rewrite rejected; tab left open. Inspect tabs before retrying.');
-      if (info.url === normalized) {
-        const ready = await this.call('evaluate_javascript', { expression: `return (${readyJS(normalized)});` }, signal);
-        if (ready === true) { this.target(t); return { ...t, url: normalized, note: 'New automation tab. No ownership or document identity guarantee. Tab left open.' }; }
+      if (info.url !== 'about:blank') webURL(info.url);
+      if (!allowRedirects && info.url !== normalized && info.url !== 'about:blank') throw Error('Redirect or URL rewrite rejected; tab left open. Inspect tabs before retrying.');
+      if (info.url !== 'about:blank') {
+        if (!observed.includes(info.url)) observed.push(info.url);
+        // readyJS asserts location.href inside the page, so a redirect that lands after
+        // page_info still reads as not ready and the poll re-observes the new URL.
+        const ready = await this.call('evaluate_javascript', { expression: `return (${readyJS(info.url)});` }, signal);
+        if (ready === true) {
+          this.target(t);
+          const redirected = info.url !== normalized;
+          return { ...t, url: info.url,
+            ...(redirected
+              ? { requestedUrl: normalized, redirects: observed,
+                  note: 'New automation tab after an HTTP redirect; settled at readyState complete on the final URL. Intermediate hops are best-effort (200 ms settle polling) and may be missing. No ownership or document identity guarantee. Tab left open.' }
+              : { note: 'New automation tab. No ownership or document identity guarantee. Tab left open.' }) };
+        }
       }
       await new Promise<void>((resolve, reject) => {
         const abort = () => { clearTimeout(timer); reject(Error('Safari operation cancelled; tab may remain open.')); };
@@ -426,14 +451,17 @@ export class Safari {
   }
   search(options: SearchOptions, signal?: AbortSignal) {
     const request: SearchRequest = searchRequest(options);
-    const expression = request.mode === 'ddg' ? searchJS(request.url) : genericSearchJS(request.url, request.selectors);
-    return this.operation(s => this.withTab(request.url, 'Search', s, async tab => {
+    return this.operation(s => this.withTab(request.url, 'Search', s, true, async tab => {
+      // The settled URL is only known once the tab exists, so the exact-URL assertion and
+      // the same-site clickthrough host are bound to the final URL after any redirect.
+      const finalUrl = tab.url;
+      const expression = request.mode === 'ddg' ? searchJS(finalUrl) : genericSearchJS(finalUrl, request.selectors);
       const { data, url } = await this.observe(tab, expression, s);
-      if (url !== request.url) throw Error('Search URL changed.');
+      if (url !== finalUrl) throw Error('Search URL changed.');
       const validated = request.mode === 'ddg'
-        ? { ...validateSearch(data, request.url), note: 'Untrusted provider ranking/content; single-page provider (DuckDuckGo blocks offset pages server-side). Empty results may indicate a challenge or changed markup. URL checks do not guarantee document identity.' }
-        : { ...validateGenericSearch(data, request.url), note: `${request.selectors ? 'Selector-driven' : 'Heuristic'} extraction on an arbitrary search-results page; entries may include navigation noise or be missing. Call safari_search again with a url from pager to move to the next page. Untrusted content; URL checks do not guarantee document identity.` };
-      const result = { mode: request.mode, ...(request.query !== undefined ? { query: request.query, region: request.region, time: request.time } : {}), ...(request.selectors !== undefined ? { selectors: request.selectors } : {}), url: request.url, ...validated };
+        ? { ...validateSearch(data, finalUrl), note: 'Untrusted provider ranking/content; single-page provider (DuckDuckGo blocks offset pages server-side). Empty results may indicate a challenge or changed markup. URL checks do not guarantee document identity.' }
+        : { ...validateGenericSearch(data, finalUrl), note: `${request.selectors ? 'Selector-driven' : 'Heuristic'} extraction on an arbitrary search-results page; entries may include navigation noise or be missing. Call safari_search again with a url from pager to move to the next page. Untrusted content; URL checks do not guarantee document identity.` };
+      const result = { mode: request.mode, ...(request.query !== undefined ? { query: request.query, region: request.region, time: request.time } : {}), ...(request.selectors !== undefined ? { selectors: request.selectors } : {}), url: finalUrl, ...(tab.requestedUrl !== undefined ? { requestedUrl: tab.requestedUrl, redirects: tab.redirects } : {}), ...validated };
       bound(result);
       // Search results never advertise a usable target, even if cleanup is unconfirmed.
       return result;
@@ -447,10 +475,12 @@ export class Safari {
     readJS(maxChars, maxLinks); // Validate before any transport work.
     const settle = options.selector !== undefined || options.text !== undefined;
     if (settle) queryJS({ selector: options.selector, text: options.text });
-    return this.operation(s => this.withTab(url, 'Fetch', s, async tab => {
-      if (settle) await this.waitData(tab, url, waitJS({ selector: options.selector, text: options.text }, url), timeoutMs, s);
+    return this.operation(s => this.withTab(url, 'Fetch', s, true, async tab => {
+      const finalUrl = tab.url;
+      if (settle) await this.waitData(tab, finalUrl, waitJS({ selector: options.selector, text: options.text }, finalUrl), timeoutMs, s);
       const data = await this.readData(tab, maxChars, maxLinks, s);
-      const result = { url: data.url, title: data.title, text: data.text, textTruncated: data.textTruncated, links: data.links, linksTruncated: data.linksTruncated,
+      if (data.url !== finalUrl) throw Error('Page URL changed after settle; fetch failed.');
+      const result = { url: data.url, ...(tab.requestedUrl !== undefined ? { requestedUrl: tab.requestedUrl, redirects: tab.redirects } : {}), title: data.title, text: data.text, textTruncated: data.textTruncated, links: data.links, linksTruncated: data.linksTruncated,
         note: 'New automation tab closed after extraction; no reusable target. Use safari_open when later interaction is needed. Untrusted page content; URL checks only, not document identity.' };
       bound(result);
       // Fetch results never advertise a usable target, even if cleanup is unconfirmed.

@@ -7,19 +7,20 @@ const text = (t: string): ToolReply => ({ content: [{ type: 'text', text: t }] }
 const readFixture = (url: string) => ({ url, title: 'Example', readyState: 'complete', text: 'Hello body', textTruncated: false, links: [{ index: 0, text: 'Home', href: 'https://example.com/' }], linksTruncated: false });
 class FetchBrowser implements Transport {
   epoch = 'test'; url = ''; calls: string[] = []; waits = 0;
-  redirect = false; changeOnRead = false; failClose = false;
+  redirect = false; changeOnRead = false; failClose = false; hops: string[] = [];
   async call(name: string, args: Record<string, unknown>) {
     this.calls.push(name);
-    if (name === 'create_tab') { this.url = this.redirect ? 'https://other.example/' : String(args.url); return reply({ handle: 'new' }); }
+    if (name === 'create_tab') { this.url = this.redirect ? 'https://other.example/' : (this.hops.length ? this.hops[this.hops.length - 1] : String(args.url)); return reply({ handle: 'new' }); }
     if (name === 'list_tabs') return reply([{ handle: 'new', url: this.url }]);
     if (name === 'browser_dialogs') return reply({ dialogs: [] });
     if (name === 'close_tab') { if (this.failClose) throw Error('close failure'); assert.equal(args.handle, 'new'); return text('Closed.'); }
     if (name === 'switch_tab') return text('OK');
-    if (name === 'page_info') return reply({ url: this.url });
+    if (name === 'page_info') return reply({ url: this.hops.length ? this.hops.shift()! : this.url });
     if (name === 'evaluate_javascript') {
       const expr = String(args.expression);
       if (expr.includes('document.body')) { if (this.changeOnRead) this.url = 'https://other.example/'; return reply(JSON.stringify(readFixture(this.url))); }
       if (expr.includes('matched')) { this.waits++; return reply(JSON.stringify({ matched: true, truncated: false })); }
+      if (expr.includes('document.readyState')) return reply(expr.includes(JSON.stringify(this.url)));
       return reply(true);
     }
     throw Error('unexpected call');
@@ -44,10 +45,41 @@ test('optional settle wait polls visible presence before extraction', async () =
   const data2 = await new Safari(browser).fetch({ url: 'https://example.com/', text: 'Hello' });
   assert.equal(browser.waits, 2); assert.equal(data2.cleanup.status, 'closed');
 });
-test('redirects and page changes fail closed and still close the created tab', async () => {
-  for (const flag of ['redirect', 'changeOnRead'] as const) {
-    const b = new FetchBrowser(); b[flag] = true;
+test('fetch follows HTTP redirects and reports the settled final URL', async () => {
+  const b = new FetchBrowser(); b.redirect = true; const safari = new Safari(b, () => {});
+  const data = await safari.fetch({ url: 'https://example.com/' });
+  assert.equal(data.url, 'https://other.example/');
+  assert.equal(data.requestedUrl, 'https://example.com/');
+  assert.equal(data.title, 'Example'); assert.equal(data.text, 'Hello body');
+  assert.deepEqual(data.redirects, ['https://example.com/', 'https://other.example/']);
+  assert.equal(data.cleanup.status, 'closed');
+  assert.equal(b.calls.filter(n => n === 'create_tab').length, 1);
+  assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
+});
+test('redirects settle on optional selector/text waits before extraction', async () => {
+  const b = new FetchBrowser(); b.redirect = true; const safari = new Safari(b, () => {});
+  const data = await safari.fetch({ url: 'https://example.com/', selector: 'article', timeoutMs: 1000 });
+  assert.equal(b.waits, 1); assert.equal(data.url, 'https://other.example/'); assert.equal(data.cleanup.status, 'closed');
+});
+test('multi-hop redirects report the observed chain in order', async () => {
+  const b = new FetchBrowser(); b.hops = ['https://mid.example/', 'https://final.example/'];
+  const data = await new Safari(b, () => {}).fetch({ url: 'https://start.example/' });
+  assert.equal(data.url, 'https://final.example/');
+  assert.equal(data.requestedUrl, 'https://start.example/');
+  assert.deepEqual(data.redirects, ['https://start.example/', 'https://mid.example/', 'https://final.example/']);
+  assert.equal(data.cleanup.status, 'closed');
+});
+test('page changes and non-web redirect targets fail closed and still close the created tab', async () => {
+  {
+    const b = new FetchBrowser(); b.changeOnRead = true;
     await assert.rejects(new Safari(b, () => {}).fetch({ url: 'https://example.com/' }));
+    assert.equal(b.calls.filter(n => n === 'create_tab').length, 1);
+    assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
+  }
+  {
+    const b = new FetchBrowser(); const call = b.call.bind(b);
+    b.call = async (name, args) => { if (name === 'page_info') { b.calls.push(name); return reply({ url: 'data:text/html,hi' }); } return call(name, args); };
+    await assert.rejects(new Safari(b, () => {}).fetch({ url: 'https://example.com/' }), /Only HTTP\(S\)/);
     assert.equal(b.calls.filter(n => n === 'create_tab').length, 1);
     assert.equal(b.calls.filter(n => n === 'close_tab').length, 1);
   }
