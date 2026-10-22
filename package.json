@@ -13,7 +13,8 @@
     "browser",
     "web-search",
     "browser-use",
-    "fetch"
+    "fetch",
+    "browser-automation"
   ],
   "files": [
     "src",

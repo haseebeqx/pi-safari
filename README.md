@@ -1,6 +1,10 @@
 # pi-safari
 
-Safari browsing and automation tools for [Pi](https://github.com/badlogic/pi-mono), using Apple’s local Safari MCP server (`/usr/bin/safaridriver --mcp`). No separate MCP configuration or build step is needed.
+**Safari browser automation and web browsing tools for [Pi](https://github.com/badlogic/pi-mono), the AI coding agent.**
+
+pi-safari is a [Pi](https://github.com/badlogic/pi-mono) extension that adds browser automation and web browsing tools to Pi, using Apple’s local Safari MCP server (`/usr/bin/safaridriver --mcp`). It lets Pi’s agent browse the web with your real Safari browser: open pages, read content, run web searches, fetch pages, follow links, fill in forms, click and type, take screenshots, and evaluate JavaScript. No separate MCP configuration or build step is needed.
+
+For AI coding agents, pi-safari is the browser automation layer that lets an LLM agent do real web browsing through Safari — the AI agent browser for Pi, and the web search, web reading and web interaction toolset for autonomous coding assistants.
 
 ## Install and set up
 
@@ -20,6 +24,15 @@ Requires **macOS, Safari 27+, Node 22.19+, and Pi**.
 For a local checkout, use `pi install /absolute/path/to/pi-safari`, or try it temporarily from the repository with `pi -e ./src/index.ts`. Pi supplies the host dependencies; development uses Pi 1.2.0.
 
 Tools operate on **Safari’s automation session**. Do not assume your normal Safari tabs, cookies, or logins are available. See Apple’s [Safari agent setup guide](https://developer.apple.com/documentation/safari-developer-tools/connecting-an-ai-agent-to-safari).
+
+## What the agent can do with the web
+
+- **Browse the web.** `safari_open` opens a **new** HTTP(S) tab in the automation session; `safari_fetch` reads a page in one self-closing call; `safari_read` reads an explicit target; `safari_follow_link` opens the destination of one visible link in a **new** tab.
+- **Search the web.** `safari_search` runs the built-in DuckDuckGo HTML search (with `region`/`time` controls) or searches a caller-chosen HTTP(S) search-results page; it returns up to 30 ranked unique results plus pager links for custom pages.
+- **Interact with pages.** `safari_snapshot` (native interactive UIDs), `safari_find`, `safari_inspect`, `safari_interact` (click/type/hover/keyPress/scroll), `safari_upload`, `safari_dialog`.
+- **Observe and evaluate.** `safari_screenshot`, `safari_console`, `safari_network`, `safari_wait`/`safari_wait_for_navigation`, and `safari_evaluate` (standalone JavaScript tier).
+
+See the [tool reference](#tool-reference) for the exact behavior, inputs and limits of each tool.
 
 ## What is allowed?
 
