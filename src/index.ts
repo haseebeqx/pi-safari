@@ -1,9 +1,10 @@
 import { Type } from 'typebox';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { SessionApproval, EvaluationGrant } from './permissions.ts';
 import { Safari } from './safari.ts';
 import { bound } from './extraction.ts';
 import { REGIONS, TIMES } from './search.ts';
+import { DEFAULT_SAFARI_SESSION_STRATEGY, getDefaultSafariSessionStrategyStore, normalizeSafariSessionStrategy, type SafariSessionStrategy } from './session-strategy.ts';
 
 const Target = {
   targetId: Type.String({ minLength: 1, maxLength: 200, description: 'Opaque Safari tab handle from safari_tabs/open' }),
@@ -16,6 +17,32 @@ export default function(pi: ExtensionAPI) {
   const approval = new SessionApproval();
   const evaluation = new EvaluationGrant();
   const safari = new Safari(undefined, () => approval.require(), () => evaluation.require());
+  const strategyStore = getDefaultSafariSessionStrategyStore();
+  pi.registerFlag('safariSession', { type: 'string', description: 'Safari session strategy for this run: per-session, per-project, or global.' });
+  let activeStrategy: SafariSessionStrategy = DEFAULT_SAFARI_SESSION_STRATEGY;
+  const flagStrategy = (): SafariSessionStrategy | undefined => {
+    const value = pi.getFlag('safariSession');
+    return typeof value === 'string' && value.trim().length > 0 ? normalizeSafariSessionStrategy(value) : undefined;
+  };
+  const resolveStrategy = (cwd: string | undefined): SafariSessionStrategy => {
+    const fromFlag = flagStrategy();
+    if (fromFlag) return fromFlag;
+    return strategyStore.load(cwd);
+  };
+  const teardownSafari = () => { if (activeStrategy !== 'global') safari.close(); };
+  const resetSessionGrants = () => { approval.reset(); evaluation.reset(); };
+  const safariSessionCommand = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+    const value = args.trim();
+    if (value !== 'per-session' && value !== 'per-project' && value !== 'global' && value !== 'reset') throw Error('Usage: /safari-session per-session|per-project|global|reset');
+    const strategy = value === 'reset' ? DEFAULT_SAFARI_SESSION_STRATEGY : normalizeSafariSessionStrategy(value);
+    if (value === 'reset') strategyStore.clear(ctx.cwd); else strategyStore.save(ctx.cwd, strategy);
+    activeStrategy = strategy;
+    ctx.ui.notify(value === 'reset' ? 'Safari session strategy reset to per-session for this project.' : `Safari session strategy set to ${strategy} for this project.`, 'info');
+  };
+  pi.registerCommand('safari-session', {
+    description: 'Set the Safari session strategy for this project: per-session (default), per-project, or global; reset clears the saved choice.',
+    handler: (args, ctx) => safariSessionCommand(args, ctx),
+  });
   pi.registerCommand('safari-permissions', {
     description: 'allow grants full Safari action permission for this session; revoke clears all grants',
     handler: (args, ctx) => approval.command(args, ctx),
@@ -26,10 +53,10 @@ export default function(pi: ExtensionAPI) {
   });
   pi.on('input', (event, ctx) => { approval.input(event, ctx); });
   pi.on('agent_end', async () => { approval.endRequest(); });
-  pi.on('session_start', async () => { approval.reset(); evaluation.reset(); safari.close(); });
-  pi.on('session_before_switch', async () => { approval.reset(); evaluation.reset(); });
-  pi.on('session_before_fork', async () => { approval.reset(); evaluation.reset(); });
-  pi.on('session_shutdown', async () => { approval.reset(); evaluation.reset(); safari.close(); });
+  pi.on('session_start', async (_event, ctx) => { activeStrategy = resolveStrategy(ctx?.cwd); resetSessionGrants(); teardownSafari(); });
+  pi.on('session_before_switch', async () => { resetSessionGrants(); });
+  pi.on('session_before_fork', async () => { resetSessionGrants(); });
+  pi.on('session_shutdown', async () => { resetSessionGrants(); teardownSafari(); });
   pi.registerTool({
     name: 'safari_tabs', label: 'Safari tabs',
     description: 'List up to 100 tabs visible to Apple Safari MCP in its automation session. Returns explicit targetId + epoch. Does not read page bodies. Normal browsing tabs/logins are not assumed available.',

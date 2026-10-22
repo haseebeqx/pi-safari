@@ -4,12 +4,20 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import extension from '../src/index.ts';
 import { ACTION_SCOPES, SessionApproval } from '../src/permissions.ts';
 import { Safari } from '../src/safari.ts';
+import { createSafariSessionStrategyStore, getDefaultSafariSessionStrategyStore, setDefaultSafariSessionStrategyStore } from '../src/session-strategy.ts';
 
 const context = (mode = 'tui') => ({ mode, hasUI: mode === 'tui', ui: { confirm: async () => { assert.fail('no automatic prompt'); }, notify() {} } }) as any;
 const input = (a: SessionApproval, text: string, source: 'interactive' | 'extension' | 'rpc' = 'interactive', streamingBehavior?: 'steer' | 'followUp') => a.input({ text, source, streamingBehavior }, context());
 function setup() {
-  const tools = new Map<string, any>(), commands = new Map<string, any>(), events = new Map<string, any>();
-  extension({ registerTool(t: any) { tools.set(t.name, t); }, registerCommand(n: string, c: any) { commands.set(n, c); }, on(n: string, h: any) { events.set(n, h); } } as unknown as ExtensionAPI);
+  const tools = new Map<string, any>(), commands = new Map<string, any>(), events = new Map<string, any>(), flags = new Map<string, any>();
+  setDefaultSafariSessionStrategyStore(createSafariSessionStrategyStore());
+  extension({
+    registerTool(t: any) { tools.set(t.name, t); },
+    registerCommand(n: string, c: any) { commands.set(n, c); },
+    registerFlag(name: string, options: any) { flags.set(name, options); },
+    getFlag(name: string) { return flags.has(name) ? flags.get(name) : undefined; },
+    on(n: string, h: any) { events.set(n, h); },
+  } as unknown as ExtensionAPI);
   return { tools, commands, events };
 }
 
@@ -41,6 +49,27 @@ test('registration and lifecycle; mutations fail closed without launching Safari
   await assert.rejects(execute(), /disabled/);
   await events.get('agent_end')();
   await assert.rejects(execute(), /disabled/);
+});
+
+test('safari-session command persists strategy per project and resets', async () => {
+  const { commands, events } = setup();
+  const store = getDefaultSafariSessionStrategyStore();
+  const ctx = context();
+  assert.equal(store.load(undefined), 'per-session');
+  await commands.get('safari-session').handler('per-project', ctx);
+  assert.equal(store.load(undefined), 'per-project');
+  await commands.get('safari-session').handler('global', ctx);
+  assert.equal(store.load(undefined), 'global');
+  await commands.get('safari-session').handler('reset', ctx);
+  assert.equal(store.load(undefined), 'per-session');
+  await assert.rejects(commands.get('safari-session').handler('/other', ctx), /Usage/);
+});
+
+test('session_start applies the resolved strategy and tears down unless global', async () => {
+  const { events } = setup();
+  const ctx = context();
+  await events.get('session_start')({ type: 'session_start', reason: 'startup' } as any, ctx);
+  await events.get('session_shutdown')({ type: 'session_shutdown', reason: 'quit' } as any);
 });
 
 test('safari_evaluate is a standalone tier: no task approval or /safari-permissions grant', async () => {

@@ -163,6 +163,19 @@ Limitations: print snapshots return structure, attributes and rectangles, not pi
 
 A page `alert`, `confirm` or `prompt` blocks the tab: `safari_read`, `safari_find`, `safari_wait` and interactions on that tab time out, while tab listing and `safari_dialog` keep working. A new tab created under a modal dialog **fails fast** with a dialog error instead of hanging, and leaves the tab open so you can answer it. After a timeout on an existing tab, list its dialogs and respond deliberately—`respond` accepts, `dismiss` cancels. The backend exposes no dialog type or default value, so when in doubt read the dialog message and pick the answer your request calls for; the dialog stays up if the answer is refused (for example `inputText` on a confirm). A dialog that fires while its tab is **not** the active tab is dropped by the backend: it is neither reported nor blocking. Killing the Safari MCP backend closes its automation tabs along with their dialogs.
 
+## Safari session strategies
+
+The Safari MCP automation session lifecycle is user-controllable through the **`/safari-session`** command:
+
+| Command | Behavior |
+|---|---|
+| `/safari-session per-session` | Default. Each Pi session gets a fresh Safari automation session; teardown on session end/switch/fork. |
+| `/safari-session per-project` | Session scoped to the project; the choice is **saved per project** for future invocations. |
+| `/safari-session global` | Keep the Safari automation session alive across Pi sessions instead of tearing it down. |
+| `/safari-session reset` | Clear the saved per-project choice and return to the default. |
+
+The chosen strategy is persisted per project directory (keyed by the working directory), so later invocations in the same project reuse it; a `--safari-session <strategy>` CLI flag overrides for a single run. With the default `per-session` strategy, ending a session closes the Safari automation session and the next session starts fresh; with `global`, the underlying Safari MCP connection is kept and reused, while task-scoped permissions and grants still reset per task.
+
 ## Practical limits and recovery
 
 - **Tabs and cleanup:** open/follow leave tabs open, including after many failures. Search tries to close only its own identified created tab, including on failure, and reports cleanup status. Cancellation, disconnect or an unidentified create reply can leave residual tabs. **Relist before retrying**; never assume a failed create did nothing. Shutdown stops the driver, not an explicit close-all routine.
