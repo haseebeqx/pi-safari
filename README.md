@@ -1,5 +1,17 @@
 # pi-safari
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/@haseebeqx/pi-safari">
+    <img src="https://img.shields.io/npm/v/@haseebeqx/pi-safari.svg" alt="npm version" height="20">
+  </a>
+  <a href="https://www.npmjs.com/package/@haseebeqx/pi-safari">
+    <img src="https://img.shields.io/npm/dm/@haseebeqx/pi-safari.svg" alt="npm downloads" height="20">
+  </a>
+  <a href="https://www.npmjs.com/package/@haseebeqx/pi-safari">
+    <img src="https://img.shields.io/badge/install-npm-@haseebeqx%2Fpi--safari-cb3837" alt="install with npm" height="20">
+  </a>
+</p>
+
 **Safari browser automation and web browsing tools for [Pi](https://github.com/badlogic/pi-mono), the AI coding agent.**
 
 pi-safari is a [Pi](https://github.com/badlogic/pi-mono) extension that adds browser automation and web browsing tools to Pi, using Apple’s local Safari MCP server (`/usr/bin/safaridriver --mcp`). It lets Pi’s agent browse the web with your real Safari browser: open pages, read content, run web searches, fetch pages, follow links, fill in forms, click and type, take screenshots, and evaluate JavaScript. No separate MCP configuration or build step is needed.
