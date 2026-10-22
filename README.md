@@ -8,7 +8,7 @@
     <img src="https://img.shields.io/npm/dm/@haseebeqx/pi-safari.svg" alt="npm downloads" height="20">
   </a>
   <a href="https://www.npmjs.com/package/@haseebeqx/pi-safari">
-    <img src="https://img.shields.io/badge/install-npm-@haseebeqx%2Fpi--safari-cb3837" alt="install with npm" height="20">
+    <img src="https://img.shields.io/badge/npm-%40haseebeqx%2Fpi--safari-cb3837" alt="npm package" height="20">
   </a>
 </p>
 
