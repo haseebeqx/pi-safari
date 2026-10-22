@@ -364,13 +364,29 @@ export class Safari {
   screenshot(t: Target, fullPage = false, signal?: AbortSignal) {
     return this.operation(s => this.checkedBackend(t, 'screenshot', { full_page: fullPage }, s), signal);
   }
-  console(t: Target, limit = 100, signal?: AbortSignal) {
+  console(t: Target, limit = 100, signal?: AbortSignal, clear?: boolean, levelFilter?: string[]) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw Error('limit must be 1..100.');
-    return this.operation(s => this.checkedBackend(t, 'browser_console_messages', { tab_handle: t.targetId, clear: false, limit }, s), signal);
+    if (clear !== undefined && typeof clear !== 'boolean') throw Error('clear must be a boolean.');
+    const levels = levelFilter ?? [];
+    if (!Array.isArray(levels) || levels.some(l => !['debug', 'info', 'warn', 'error'].includes(l))) throw Error('levelFilter must be an array of debug|info|warn|error.');
+    const args: Record<string, unknown> = { tab_handle: t.targetId, clear: clear ?? false, limit };
+    if (levels.length > 0) args.level_filter = levels;
+    return this.operation(s => this.checkedBackend(t, 'browser_console_messages', args, s), signal);
   }
-  network(t: Target, urlSubstring = '', signal?: AbortSignal) {
+  network(t: Target, urlSubstring = '', signal?: AbortSignal, clear?: boolean, method?: string, statusMin?: number, statusMax?: number, since?: string) {
     if (typeof urlSubstring !== 'string' || urlSubstring.length > 500) throw Error('urlSubstring must be at most 500 characters.');
-    return this.operation(s => this.checkedBackend(t, 'list_network_requests', { tab_handle: t.targetId, clear: false, filter: { url_substring: urlSubstring } }, s), signal);
+    if (clear !== undefined && typeof clear !== 'boolean') throw Error('clear must be a boolean.');
+    if (method !== undefined && (typeof method !== 'string' || method.length > 500)) throw Error('method must be a string of at most 500 characters.');
+    if (statusMin !== undefined && !Number.isInteger(statusMin)) throw Error('statusMin must be an integer.');
+    if (statusMax !== undefined && !Number.isInteger(statusMax)) throw Error('statusMax must be an integer.');
+    if (statusMin !== undefined && statusMax !== undefined && statusMin > statusMax) throw Error('statusMin must not exceed statusMax.');
+    const filter: Record<string, unknown> = { url_substring: urlSubstring };
+    if (method !== undefined) filter.method = method;
+    if (statusMin !== undefined) filter.status_min = statusMin;
+    if (statusMax !== undefined) filter.status_max = statusMax;
+    const args: Record<string, unknown> = { tab_handle: t.targetId, clear: clear ?? false, filter };
+    if (since !== undefined) args.since = since;
+    return this.operation(s => this.checkedBackend(t, 'list_network_requests', args, s), signal);
   }
   navigate(t: Target, expectedUrl: string, url: string, signal?: AbortSignal) {
     webURL(expectedUrl); const destination = webURL(url);

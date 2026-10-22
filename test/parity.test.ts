@@ -32,6 +32,8 @@ test('native observations select explicit target and use verified non-draining p
     [() => s.screenshot(t, true), 'screenshot', { full_page: true }],
     [() => s.console(t, 5), 'browser_console_messages', { tab_handle: t.targetId, clear: false, limit: 5 }],
     [() => s.network(t, 'example'), 'list_network_requests', { tab_handle: t.targetId, clear: false, filter: { url_substring: 'example' } }],
+    [() => s.console(t, 5, undefined, true, ['error']), 'browser_console_messages', { tab_handle: t.targetId, clear: true, limit: 5, level_filter: ['error'] }],
+    [() => s.network(t, 'example', undefined, true, 'fetch', 500, 599, '1700000000000'), 'list_network_requests', { tab_handle: t.targetId, clear: true, filter: { url_substring: 'example', method: 'fetch', status_min: 500, status_max: 599 }, since: '1700000000000' }],
   ] as const) {
     b.calls = []; const result = await run();
     assert.equal(result.text, 'native-output'); assert.equal(result.url, url);

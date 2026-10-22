@@ -52,6 +52,13 @@ test('validates URL, selector and bounds before transport calls', async () => {
   assert.equal(b.calls.length, 0);
   assert.throws(() => bound('😀'.repeat(20000)), /48 KiB/);
 });
+test('console and network debugging filters validate before transport calls', () => {
+  const b = new Browser(), s = new Safari(b, () => {});
+  assert.throws(() => s.console(target, 5, undefined, true, ['verbose' as any]), /levelFilter/);
+  assert.throws(() => s.console(target, 5, undefined, 'yes' as any), /clear/);
+  assert.throws(() => s.network(target, 'example', undefined, true, 'fetch', 599, 500), /statusMin/);
+  assert.equal(b.calls.length, 0);
+});
 test('tabs return bounded explicit handles with session epoch', async () => {
   const b = new Browser(); b.tabs = Array.from({ length: 110 }, (_, i) => ({ handle: `page-${i}`, url: 'https://example.com/' }));
   const listed = await new Safari(b, () => {}).tabs();

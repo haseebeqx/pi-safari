@@ -65,6 +65,20 @@ test('safari-session command persists strategy per project and resets', async ()
   await assert.rejects(commands.get('safari-session').handler('/other', ctx), /Usage/);
 });
 
+test('safari-session global persists a machine-wide default strategy', async () => {
+  const { commands } = setup();
+  const store = getDefaultSafariSessionStrategyStore();
+  const projectCtx = context(); (projectCtx as any).cwd = '/Users/me/project-b';
+  assert.equal(store.load('/Users/me/project-b'), 'per-session');
+  await commands.get('safari-session').handler('global', projectCtx);
+  assert.equal(store.load('/Users/me/project-b'), 'global');
+  assert.equal(store.load('/Users/me/project-c'), 'global');
+  await commands.get('safari-session').handler('per-project', projectCtx);
+  assert.equal(store.load('/Users/me/project-b'), 'per-project');
+  await commands.get('safari-session').handler('reset', projectCtx);
+  assert.equal(store.load('/Users/me/project-b'), 'per-session');
+});
+
 test('session_start applies the resolved strategy and tears down unless global', async () => {
   const { events } = setup();
   const ctx = context();

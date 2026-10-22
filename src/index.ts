@@ -35,12 +35,12 @@ export default function(pi: ExtensionAPI) {
     const value = args.trim();
     if (value !== 'per-session' && value !== 'per-project' && value !== 'global' && value !== 'reset') throw Error('Usage: /safari-session per-session|per-project|global|reset');
     const strategy = value === 'reset' ? DEFAULT_SAFARI_SESSION_STRATEGY : normalizeSafariSessionStrategy(value);
-    if (value === 'reset') strategyStore.clear(ctx.cwd); else strategyStore.save(ctx.cwd, strategy);
+    if (value === 'reset') { strategyStore.clear(ctx.cwd); strategyStore.clear(undefined); } else strategyStore.save(value === 'global' ? undefined : ctx.cwd, strategy);
     activeStrategy = strategy;
-    ctx.ui.notify(value === 'reset' ? 'Safari session strategy reset to per-session for this project.' : `Safari session strategy set to ${strategy} for this project.`, 'info');
+    ctx.ui.notify(value === 'reset' ? 'Safari session strategy reset to per-session.' : `Safari session strategy set to ${strategy}${value === 'global' ? ' (machine-wide)' : ` for ${ctx.cwd ?? 'this project'}`}.`, 'info');
   };
   pi.registerCommand('safari-session', {
-    description: 'Set the Safari session strategy for this project: per-session (default), per-project, or global; reset clears the saved choice.',
+    description: 'Set the Safari session strategy: per-session (default), per-project (saved per project), or global (saved machine-wide); reset clears the saved choice.',
     handler: (args, ctx) => safariSessionCommand(args, ctx),
   });
   pi.registerCommand('safari-permissions', {
@@ -204,15 +204,15 @@ export default function(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: 'safari_console', label: 'Safari console messages',
-    description: 'Read buffered native console messages without clearing. Maximum 100 entries and 12000 backend characters. May contain sensitive untrusted page data. Not a persistent subscription.',
-    parameters: Type.Object({ ...Target, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }), annotations: { readOnlyHint: true },
-    async execute(_id, args, signal) { return result(await safari.console(args, args.limit, signal)); },
+    description: 'Read buffered native console messages without clearing; pass clear to reset the buffer first. Optional levelFilter (debug|info|warn|error) restricts returned levels. Maximum 100 entries and 12000 backend characters. May contain sensitive untrusted page data. Not a persistent subscription.',
+    parameters: Type.Object({ ...Target, limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), clear: Type.Optional(Type.Boolean()), levelFilter: Type.Optional(Type.Array(Type.Union((['debug', 'info', 'warn', 'error'] as const).map(v => Type.Literal(v))))) }), annotations: { readOnlyHint: true },
+    async execute(_id, args, signal) { return result(await safari.console(args, args.limit, signal, args.clear, args.levelFilter)); },
   });
   pi.registerTool({
     name: 'safari_network', label: 'Safari network summaries',
-    description: 'Read native Inspector network summaries without clearing; optional URL substring. Up to 12000 backend characters; 256 KiB transport cap may reject larger buffers. No request bodies, request interception, or complete historical coverage promised.',
-    parameters: Type.Object({ ...Target, urlSubstring: Type.Optional(Type.String({ maxLength: 500 })) }), annotations: { readOnlyHint: true },
-    async execute(_id, args, signal) { return result(await safari.network(args, args.urlSubstring, signal)); },
+    description: 'Read native Inspector network summaries without clearing; optional URL substring, method, statusMin/statusMax range and since filter. Up to 12000 backend characters; 256 KiB transport cap may reject larger buffers. No request bodies, request interception, or complete historical coverage promised.',
+    parameters: Type.Object({ ...Target, urlSubstring: Type.Optional(Type.String({ maxLength: 500 })), clear: Type.Optional(Type.Boolean()), method: Type.Optional(Type.String({ maxLength: 500 })), statusMin: Type.Optional(Type.Integer({ minimum: 100, maximum: 599 })), statusMax: Type.Optional(Type.Integer({ minimum: 100, maximum: 599 })), since: Type.Optional(Type.String({ maxLength: 64 })) }), annotations: { readOnlyHint: true },
+    async execute(_id, args, signal) { return result(await safari.network(args, args.urlSubstring, signal, args.clear, args.method, args.statusMin, args.statusMax, args.since)); },
   });
   pi.registerTool({
     name: 'safari_dialog', label: 'Handle Safari JS dialogs',

@@ -100,8 +100,8 @@ Use the exact **`targetId` and `epoch`** returned by `safari_tabs` or `safari_op
 | `safari_wait` | `expectedUrl`, `selector?`, `text?`, `timeoutMs?` | Polls visible presence, not absence. Same query rules as find; default 5000 ms, range 0–10000. URL drift fails. |
 | `safari_wait_for_navigation` | `expectedUrl`, `timeoutMs?` | Blocks until the tab's document reaches `readyState complete` at the exact `expectedUrl` — e.g. right after `safari_navigate`, or through multi-stage redirects that land on that URL while still loading. Returns the final URL + title. Polls the target only, no navigation or mutation; default 5000 ms, range 0–10000. A modal JS dialog fails fast. |
 | `safari_screenshot` | `fullPage?` | Viewport/full-page PNG as a backend temporary **path**, not an inline image. Does not read the file automatically. |
-| `safari_console` | `limit?` | Buffered messages without clearing; default/maximum 100 entries. |
-| `safari_network` | `urlSubstring?` | Buffered Inspector request summaries without clearing; filter up to 500 characters. No bodies or interception; historical coverage is not guaranteed. |
+| `safari_console` | `limit?`, `clear?`, `levelFilter?` | Buffered messages without clearing, or after clearing with `clear`. Optional `levelFilter` (`debug`/`info`/`warn`/`error`) restricts returned levels; default/maximum 100 entries. |
+| `safari_network` | `urlSubstring?`, `clear?`, `method?`, `statusMin?`, `statusMax?`, `since?` | Buffered Inspector request summaries without clearing, or after clearing with `clear`. Optional `method` filter, `statusMin`/`statusMax` status range and `since` time filter, on top of `urlSubstring`. No bodies or interception; historical coverage is not guaranteed. |
 | `safari_close` | None | Closes exactly the identified tab, or reports `already-absent`. Rejects stale epochs; never retries or guesses unidentified tabs. |
 | `safari_interact` **scroll only** | `expectedUrl`, `action` | One native scroll with bounded deltas; see interaction format below. |
 | `safari_dialog` | `action` (`list`, `respond`, `dismiss`), `inputText?` | Detects and answers native `alert`/`confirm`/`prompt` dialogs on the target tab, which block every other tool on that tab. `list` is a permission-free read; `respond`/`dismiss` are infrastructure mutations, like closing the tab, and are not task-classified—choose the answer your request actually calls for. `inputText` (1–4000 characters) only works with `respond`, answers a prompt with a specific value, and is rejected by confirm/alert dialogs, leaving them up. `respond` without it accepts (alert accepts, confirm true, prompt accepts the default); `dismiss` cancels (confirm false, prompt cancel). Dialog messages carry no type or default value. |
@@ -171,10 +171,10 @@ The Safari MCP automation session lifecycle is user-controllable through the **`
 |---|---|
 | `/safari-session per-session` | Default. Each Pi session gets a fresh Safari automation session; teardown on session end/switch/fork. |
 | `/safari-session per-project` | Session scoped to the project; the choice is **saved per project** for future invocations. |
-| `/safari-session global` | Keep the Safari automation session alive across Pi sessions instead of tearing it down. |
-| `/safari-session reset` | Clear the saved per-project choice and return to the default. |
+| `/safari-session global` | Keep the Safari automation session alive across Pi sessions instead of tearing it down; the choice is **saved machine-wide** for later invocations. |
+| `/safari-session reset` | Clear the saved choice and return to the default. |
 
-The chosen strategy is persisted per project directory (keyed by the working directory), so later invocations in the same project reuse it; a `--safari-session <strategy>` CLI flag overrides for a single run. With the default `per-session` strategy, ending a session closes the Safari automation session and the next session starts fresh; with `global`, the underlying Safari MCP connection is kept and reused, while task-scoped permissions and grants still reset per task.
+The chosen strategy is persisted: `per-project` is saved per project directory (keyed by the working directory), and `global` is saved as a machine-wide default that applies to all projects until a project overrides it with its own saved choice. A `--safari-session <strategy>` CLI flag overrides for a single run. With the default `per-session` strategy, ending a session closes the Safari automation session and the next session starts fresh; with `global`, the underlying Safari MCP connection is kept and reused, while task-scoped permissions and grants still reset per task.
 
 ## Practical limits and recovery
 

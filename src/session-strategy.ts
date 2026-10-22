@@ -48,9 +48,12 @@ export function createSafariSessionStrategyStore(filePath?: string): SafariSessi
   return {
     load(cwd) {
       const key = keyOf(cwd);
-      const stored = readMap()[key];
+      const map = readMap();
+      const hasEntry = Object.hasOwn(map, key);
+      const stored = hasEntry ? map[key] : map[FALLBACK_PROJECT_KEY];
       const strategy = normalizeSafariSessionStrategy(stored);
-      if (stored !== undefined) memory.set(key, strategy);
+      const cacheKey = hasEntry ? key : FALLBACK_PROJECT_KEY;
+      if (stored !== undefined) memory.set(cacheKey, strategy);
       return strategy;
     },
     save(cwd, strategy) { const key = keyOf(cwd); const map = readMap(); map[key] = strategy; writeMap(map); },
