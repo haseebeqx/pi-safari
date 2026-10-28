@@ -16,8 +16,6 @@
 
 pi-safari is a [Pi](https://github.com/badlogic/pi-mono) extension that adds browser automation and web browsing tools to Pi, using Apple’s local Safari MCP server (`/usr/bin/safaridriver --mcp`). It lets Pi’s agent browse the web with your real Safari browser: open pages, read content, run web searches, fetch pages, follow links, fill in forms, click and type, take screenshots, and evaluate JavaScript. No separate MCP configuration or build step is needed.
 
-For AI coding agents, pi-safari is the browser automation layer that lets an LLM agent do real web browsing through Safari — the AI agent browser for Pi, and the web search, web reading and web interaction toolset for autonomous coding assistants.
-
 ## Install and set up
 
 > [!NOTE]
@@ -186,7 +184,7 @@ The Safari MCP automation session lifecycle is user-controllable through the **`
 | `/safari-session global` | Keep the Safari automation session alive across Pi sessions instead of tearing it down; the choice is **saved machine-wide** for later invocations. |
 | `/safari-session reset` | Clear the saved choice and return to the default. |
 
-The chosen strategy is persisted: `per-project` is saved per project directory (keyed by the working directory), and `global` is saved as a machine-wide default that applies to all projects until a project overrides it with its own saved choice. A `--safari-session <strategy>` CLI flag overrides for a single run. With the default `per-session` strategy, ending a session closes the Safari automation session and the next session starts fresh; with `global`, the underlying Safari MCP connection is kept and reused, while task-scoped permissions and grants still reset per task.
+The chosen strategy is persisted: `per-project` is saved per project directory (keyed by the working directory), and `global` is saved as a machine-wide default that applies to all projects until a project overrides it with its own saved choice. A `--safariSession <strategy>` CLI flag overrides for a single run. With the default `per-session` strategy, ending a session closes the Safari automation session and the next session starts fresh; with `global`, the underlying Safari MCP connection is kept and reused, while task-scoped permissions and grants still reset per task.
 
 ## Practical limits and recovery
 
@@ -210,19 +208,6 @@ The chosen strategy is persisted: `per-project` is saved per project directory (
 | Redirect rejected | Inspect the resulting tab; use the intended final URL explicitly. Rejection does not undo navigation. |
 | Native capability missing/incompatible | Check Safari/package compatibility. Native tools require known backend schemas and fail closed when those change. |
 | Empty search or console/network results | Search may be challenged or markup may have changed. Safari controls buffer availability; try observing before generating traffic. There is no complete-history guarantee. |
-
-## Development
-
-```sh
-npm ci --ignore-scripts
-npm run check
-```
-
-Runs unit tests and TypeScript checks; no Safari or live model calls. Mocked permission tests do not establish real-model authorization accuracy. `npm run test:live -- --run` explicitly opts into Safari fixture tests and a benign DuckDuckGo search; it does not verify Pi’s permission UX. See [VERIFICATION.md](VERIFICATION.md) in the checkout for recorded results and gaps.
-
-## License
-
-[MIT](LICENSE).
 
 ## Use Safari MCP directly (without this extension)
 
@@ -248,3 +233,15 @@ claude mcp add safari-mcp -- "/usr/bin/safaridriver" --mcp
 ```
 
 Direct use exposes **Apple’s native MCP tools**, not this extension’s `safari_*` wrappers. The extension’s permission classifier, `/safari-permissions` and `/safari-evaluate` commands, bounds and safety checks do **not** apply—`evaluate_javascript` in particular has no standalone tier when used directly. Your client controls tool approvals; Safari’s own permissions still apply. Capabilities and safety behavior differ from this extension. Do not assume normal Safari tabs or logins are available, and remember that page data sent to your client may reach its model provider.
+
+## Development
+
+```sh
+npm ci --ignore-scripts
+npm run check
+```
+
+Runs unit tests and TypeScript checks; no Safari or live model calls. Mocked permission tests do not establish real-model authorization accuracy. `npm run test:live -- --run` explicitly opts into Safari fixture tests and a benign DuckDuckGo search; it does not verify Pi’s permission UX.
+## License
+
+[MIT](LICENSE).
