@@ -35,8 +35,12 @@ export default function(pi: ExtensionAPI) {
     const value = args.trim();
     if (value !== 'per-session' && value !== 'per-project' && value !== 'global' && value !== 'reset') throw Error('Usage: /safari-session per-session|per-project|global|reset');
     const strategy = value === 'reset' ? DEFAULT_SAFARI_SESSION_STRATEGY : normalizeSafariSessionStrategy(value);
-    if (value === 'reset') { strategyStore.clear(ctx.cwd); strategyStore.clear(undefined); } else strategyStore.save(value === 'global' ? undefined : ctx.cwd, strategy);
+    let persistFailed = false;
+    try {
+      if (value === 'reset') { strategyStore.clear(ctx.cwd); strategyStore.clear(undefined); } else strategyStore.save(value === 'global' ? undefined : ctx.cwd, strategy);
+    } catch { persistFailed = true; }
     activeStrategy = strategy;
+    if (persistFailed) ctx.ui.notify('Could not save the Safari session strategy; it applies to this run only.', 'warning');
     ctx.ui.notify(value === 'reset' ? 'Safari session strategy reset to per-session.' : `Safari session strategy set to ${strategy}${value === 'global' ? ' (machine-wide)' : ` for ${ctx.cwd ?? 'this project'}`}.`, 'info');
   };
   pi.registerCommand('safari-session', {

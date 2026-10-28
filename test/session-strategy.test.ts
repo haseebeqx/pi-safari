@@ -1,4 +1,7 @@
 import { test } from 'node:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { createSafariSessionStrategyStore, DEFAULT_SAFARI_SESSION_STRATEGY, normalizeSafariSessionStrategy } from '../src/session-strategy.ts';
 import type { SafariSessionStrategy } from '../src/session-strategy.ts';
@@ -43,4 +46,15 @@ test('per-project entries do not leak into machine-wide default lookups', () => 
   store.save('/Users/me/project-a', 'per-project');
   assert.equal(store.load('/Users/me/project-a'), 'per-project');
   assert.equal(store.load('/Users/me/project-b'), DEFAULT_SAFARI_SESSION_STRATEGY);
+});
+
+test('strategy store persists to disk across instances', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'pi-safari-')), 'nested', 'strategies.json');
+  createSafariSessionStrategyStore(file).save('/proj', 'per-project');
+  createSafariSessionStrategyStore(file).save(undefined, 'global');
+  const reloaded = createSafariSessionStrategyStore(file);
+  assert.equal(reloaded.load('/proj'), 'per-project');
+  assert.equal(reloaded.load('/other'), 'global');
+  reloaded.clear('/proj');
+  assert.equal(createSafariSessionStrategyStore(file).load('/proj'), 'global');
 });

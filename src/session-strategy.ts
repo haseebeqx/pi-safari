@@ -61,7 +61,7 @@ export function createSafariSessionStrategyStore(filePath?: string): SafariSessi
   };
 }
 
-let defaultStore: SafariSessionStrategyStore = createSafariSessionStrategyStore();
+let defaultStore: SafariSessionStrategyStore = createSafariSessionStrategyStore(getDefaultSafariSessionStrategyStorePath());
 export function getDefaultSafariSessionStrategyStore(): SafariSessionStrategyStore { return defaultStore; }
 export function setDefaultSafariSessionStrategyStore(store: SafariSessionStrategyStore): void { defaultStore = store; }
 export function getDefaultSafariSessionStrategyStorePath(): string { return join(homedir(), '.pi', 'agent', 'safari-session-strategies.json'); }
