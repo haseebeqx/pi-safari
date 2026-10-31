@@ -18,6 +18,7 @@
   ],
   "files": [
     "src",
+    "!src/index-unrestricted.ts",
     "README.md"
   ],
   "pi": {
@@ -40,6 +41,7 @@
     "test:live": "node --experimental-strip-types scripts/live-smoke.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm test && npm run typecheck",
+    "stage:unrestricted": "node --experimental-strip-types scripts/stage-unrestricted.ts",
     "prepublishOnly": "npm run check"
   },
   "engines": {

@@ -13,7 +13,19 @@ const Target = {
 function result(data: unknown) {
   return { content: [{ type: 'text' as const, text: bound(data) }], details: undefined };
 }
-export default function(pi: ExtensionAPI) {
+/**
+ * Fixed at package build time by the entry point. The default (safe) package grants nothing;
+ * the unrestricted package (src/index-unrestricted.ts) pre-grants both tiers each session.
+ */
+export interface SafariPolicy { fullActions?: boolean; evaluate?: boolean; /** Also allow granted tiers in print/JSON/RPC modes. */ noninteractive?: boolean }
+
+export default createSafariExtension();
+
+export function createSafariExtension(policy: SafariPolicy = {}) {
+  return (pi: ExtensionAPI) => registerSafari(pi, policy);
+}
+
+function registerSafari(pi: ExtensionAPI, policy: SafariPolicy) {
   const approval = new SessionApproval();
   const evaluation = new EvaluationGrant();
   const safari = new Safari(undefined, () => approval.require(), () => evaluation.require());
@@ -30,7 +42,13 @@ export default function(pi: ExtensionAPI) {
     return strategyStore.load(cwd);
   };
   const teardownSafari = () => { if (activeStrategy !== 'global') safari.close(); };
-  const resetSessionGrants = () => { approval.reset(); evaluation.reset(); };
+  // Policy grants are reapplied on every reset so session switch/fork keep them; /safari-permissions revoke and
+  // /safari-evaluate revoke still clear them until the next session starts.
+  const resetSessionGrants = () => {
+    approval.reset(); evaluation.reset();
+    if (policy.fullActions) approval.grant({ noninteractive: policy.noninteractive });
+    if (policy.evaluate) evaluation.grant({ noninteractive: policy.noninteractive });
+  };
   const safariSessionCommand = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
     const value = args.trim();
     if (value !== 'per-session' && value !== 'per-project' && value !== 'global' && value !== 'reset') throw Error('Usage: /safari-session per-session|per-project|global|reset');
@@ -57,7 +75,13 @@ export default function(pi: ExtensionAPI) {
   });
   pi.on('input', (event, ctx) => { approval.input(event, ctx); });
   pi.on('agent_end', async () => { approval.endRequest(); });
-  pi.on('session_start', async (_event, ctx) => { activeStrategy = resolveStrategy(ctx?.cwd); resetSessionGrants(); teardownSafari(); });
+  pi.on('session_start', async (_event, ctx) => {
+    activeStrategy = resolveStrategy(ctx?.cwd); resetSessionGrants(); teardownSafari();
+    if ((policy.fullActions || policy.evaluate) && ctx?.hasUI) {
+      const tiers = [policy.fullActions && 'restricted actions', policy.evaluate && 'JavaScript evaluation'].filter(Boolean).join(' and ');
+      ctx.ui.notify(`pi-safari-unrestricted: ${tiers} pre-approved for this session (no task classifier). Revoke per session with /safari-permissions revoke and /safari-evaluate revoke.`, 'warning');
+    }
+  });
   pi.on('session_before_switch', async () => { resetSessionGrants(); });
   pi.on('session_before_fork', async () => { resetSessionGrants(); });
   pi.on('session_shutdown', async () => { resetSessionGrants(); teardownSafari(); });

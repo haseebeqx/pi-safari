@@ -42,10 +42,16 @@ export async function arbitrate(ctx: Context, request: string, proposal: Proposa
  */
 export class EvaluationGrant {
   private allowed = false;
-  reset() { this.allowed = false; }
+  private anyMode = false;
+  reset() { this.allowed = false; this.anyMode = false; }
+  /**
+   * Policy grant from the extension entry point (e.g. the full-permission package), never from session content.
+   * noninteractive also allows print/JSON/RPC modes.
+   */
+  grant(options: GrantOptions = {}) { this.allowed = true; this.anyMode = options.noninteractive === true; }
   require(ctx?: Pick<ExtensionContext, 'mode' | 'hasUI'>) {
     if (!this.allowed) throw Error('Safari JavaScript evaluation disabled: no /safari-evaluate allow grant. It is a standalone tier; /safari-permissions allow and task approval do not cover it.');
-    if (ctx && (ctx.mode !== 'tui' || !ctx.hasUI)) throw Error('Safari JavaScript evaluation disabled in noninteractive contexts; use an interactive Pi terminal.');
+    if (!this.anyMode && ctx && (ctx.mode !== 'tui' || !ctx.hasUI)) throw Error('Safari JavaScript evaluation disabled in noninteractive contexts; use an interactive Pi terminal.');
   }
   private interactive(ctx: Pick<ExtensionContext, 'mode' | 'hasUI'> | undefined): asserts ctx {
     if (!ctx || ctx.mode !== 'tui' || !ctx.hasUI) throw Error('Safari JavaScript evaluation disabled in noninteractive contexts; use an interactive Pi terminal.');
@@ -54,10 +60,12 @@ export class EvaluationGrant {
     if (args.trim() === 'revoke') { this.allowed = false; ctx.ui.notify('Safari JavaScript evaluation permission revoked.', 'info'); return; }
     if (args.trim() !== 'allow') throw Error('Usage: /safari-evaluate allow|revoke');
     this.interactive(ctx);
-    this.allowed = true;
+    this.allowed = true; this.anyMode = false;
     ctx.ui.notify('Safari JavaScript evaluation enabled for this session. /safari-evaluate revoke to revoke.', 'info');
   }
 }
+
+export interface GrantOptions { noninteractive?: boolean }
 
 /** Memory-only grants, never reconstructed from session content. Each mutation is judged independently. */
 export class SessionApproval {
@@ -72,7 +80,13 @@ export class SessionApproval {
     this.pending.clear();
     this.userRequest = undefined;
   }
-  reset() { this.allowed = false; this.invalidate(); }
+  private anyMode = false;
+  reset() { this.allowed = false; this.anyMode = false; this.invalidate(); }
+  /**
+   * Policy grant from the extension entry point (e.g. the full-permission package), never from session content.
+   * noninteractive also allows print/JSON/RPC modes.
+   */
+  grant(options: GrantOptions = {}) { this.allowed = true; this.anyMode = options.noninteractive === true; }
   endRequest() { this.invalidate(); }
   input(event: Pick<InputEvent, 'text' | 'source' | 'streamingBehavior'>, ctx: Context) {
     this.invalidate();
@@ -81,7 +95,7 @@ export class SessionApproval {
   }
   require(ctx?: Pick<ExtensionContext, 'mode' | 'hasUI'>) {
     const operation = this.operationGeneration.getStore();
-    if (!operation || operation.generation !== this.generation || operation.signal?.aborted || (ctx && (ctx.mode !== 'tui' || !ctx.hasUI))) {
+    if (!operation || operation.generation !== this.generation || operation.signal?.aborted || (!this.anyMode && ctx && (ctx.mode !== 'tui' || !ctx.hasUI))) {
       throw Error('Safari actions disabled: missing or retired operation permission.');
     }
   }
@@ -90,9 +104,9 @@ export class SessionApproval {
   }
   async run<T>(ctx: Context, scope: ActionScope, action: (usage?: Usage) => Promise<T>, signal?: AbortSignal, details?: Omit<Proposal, 'scope'>): Promise<T> {
     if (signal?.aborted || ctx?.signal?.aborted) throw Error('Safari operation cancelled.');
-    this.interactive(ctx);
+    if (!this.anyMode) this.interactive(ctx);
     const generation = this.generation;
-    const operationSignal = signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal;
+    const operationSignal = signal && ctx?.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx?.signal;
     let usage: Usage | undefined;
     if (!this.allowed) {
       if (!this.userRequest || !details || !ACTION_SCOPES.includes(scope)) throw Error('Safari actions disabled: no current trusted task or exact proposal.');
@@ -120,7 +134,7 @@ export class SessionApproval {
     if (args.trim() === 'revoke') { this.reset(); ctx.ui.notify('Safari action permission revoked.', 'info'); return; }
     if (args.trim() !== 'allow') throw Error('Usage: /safari-permissions allow|revoke');
     this.interactive(ctx);
-    this.reset(); this.allowed = true;
+    this.reset(); this.allowed = true; this.anyMode = false;
     ctx.ui.notify('Full Safari action permission enabled for this session. /safari-permissions revoke to revoke.', 'info');
   }
 }

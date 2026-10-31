@@ -51,3 +51,7 @@ jobs:
         run: npm run check
       - name: Stage release package for approval
         run: npm stage publish --access public --tag latest --registry https://registry.npmjs.org
+      - name: Build unrestricted package
+        run: npm run stage:unrestricted
+      - name: Stage unrestricted package for approval
+        run: npm stage publish ./dist-unrestricted --access public --tag latest --registry https://registry.npmjs.org

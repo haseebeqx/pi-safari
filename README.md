@@ -25,13 +25,28 @@ Requires **macOS, Safari 27+, Node 22.19+, and Pi**.
 
 1. In **Safari → Settings → Advanced**, enable **Show features for web developers**.
 2. In **Safari → Settings → Developer**, enable **Allow remote automation and external agents**. Complete any Safari connection approval yourself; the extension does not change these settings.
-3. Install and reload/restart Pi:
+3. Install **one** of the two packages, then reload/restart Pi:
 
-   ```sh
-   pi install npm:@haseebeqx/pi-safari
-   ```
+   | Package | Permissions | Install |
+   |---|---|---|
+   | **`@haseebeqx/pi-safari`** | Restricted actions are [checked against your current task](#restricted-checked-against-your-current-task); JavaScript evaluation needs [`/safari-evaluate allow`](#javascript-evaluation-standalone-tier). | `pi install npm:@haseebeqx/pi-safari` |
+   | **`@haseebeqx/pi-safari-unrestricted`** | All actions and JavaScript evaluation are pre-approved in every Pi mode, with no task checks. [Details](#unrestricted-package-opt-in). | `pi install npm:@haseebeqx/pi-safari-unrestricted` |
 
-For a local checkout, use `pi install /absolute/path/to/pi-safari`, or try it temporarily from the repository with `pi -e ./src/index.ts`. Pi supplies the host dependencies; development uses Pi 1.2.0.
+   Both register the same tools and commands, so to switch, `pi remove` the installed one first.
+
+#### Install from a local checkout
+
+Local installs load the checkout in place without copying, so edits apply after `/reload`. As with npm, install only one:
+
+```sh
+# Safe package
+pi install /absolute/path/to/pi-safari
+
+# Unrestricted package
+pi install /absolute/path/to/pi-safari/src/index-unrestricted.ts
+```
+
+To try either one for a single run without installing, use `pi -e ./src/index.ts` or `pi -e ./src/index-unrestricted.ts` from the repository. Pi supplies the host dependencies; development uses Pi 1.2.0.
 
 Tools operate on **Safari’s automation session**. Do not assume your normal Safari tabs, cookies, or logins are available. See Apple’s [Safari agent setup guide](https://developer.apple.com/documentation/safari-developer-tools/connecting-an-ai-agent-to-safari).
 
@@ -89,6 +104,19 @@ Running caller-supplied JavaScript in a tab is a deliberately separate permissio
 Enable it with the dedicated command **`/safari-evaluate allow`** (interactive Pi terminal only) and clear it with **`/safari-evaluate revoke`**. Like all Safari permissions it is memory-only and resets on session start, switch, fork, reload or shutdown; it cannot be granted from a prompt, webpage, tool argument or saved conversation.
 
 An expression has full page-level power—DOM, storage, network, navigation—and runs once with the page's credentials; it may navigate, submit, close or freeze the tab. `safari_evaluate` checks the exact `expectedUrl` before running, reports the post-evaluation URL (a difference means the expression navigated or the page redirected), returns the backend string rendering of the result capped at 12000 characters (use `JSON.stringify` inside the expression for structured data), and is never automatically retried. Inspect before any retry.
+
+### Unrestricted package (opt-in)
+
+**[`@haseebeqx/pi-safari-unrestricted`](https://www.npmjs.com/package/@haseebeqx/pi-safari-unrestricted)** is a separately published package in which every session starts with all permissions granted. To switch to it from `@haseebeqx/pi-safari`:
+
+```sh
+pi remove npm:@haseebeqx/pi-safari
+pi install npm:@haseebeqx/pi-safari-unrestricted
+```
+
+From a local checkout, install `/absolute/path/to/pi-safari/src/index-unrestricted.ts` instead (see [Install from a local checkout](#install-from-a-local-checkout)).
+
+It is built from the same source and released with the same version. Each session starts as if you had run `/safari-permissions allow` and `/safari-evaluate allow`, and the grants also apply in print, JSON and RPC modes (the safe package blocks restricted actions there). The task classifier is skipped, and **the agent, or instructions injected by a web page, can click, submit, upload local files and run JavaScript without a per-task check.** Safari settings, URL/target validation and tool limits still apply. The revoke commands clear the grants until the next session starts. Install only one of the two packages, because both register the same tools and commands.
 
 ## Tool reference
 
@@ -241,7 +269,7 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-Runs unit tests and TypeScript checks; no Safari or live model calls. Mocked permission tests do not establish real-model authorization accuracy. `npm run test:live -- --run` explicitly opts into Safari fixture tests and a benign DuckDuckGo search; it does not verify Pi’s permission UX.
+Runs unit tests and TypeScript checks; no Safari or live model calls. `npm run stage:unrestricted` builds the unrestricted package into `dist-unrestricted/`; the release workflow stages both packages for approval from the same GitHub release. Mocked permission tests do not establish real-model authorization accuracy. `npm run test:live -- --run` explicitly opts into Safari fixture tests and a benign DuckDuckGo search; it does not verify Pi’s permission UX.
 ## License
 
 [MIT](LICENSE).
