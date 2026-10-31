@@ -1,16 +1,5 @@
 # pi-safari
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/@haseebeqx/pi-safari">
-    <img src="https://img.shields.io/npm/v/@haseebeqx/pi-safari.svg" alt="npm version" height="20">
-  </a>
-  <a href="https://www.npmjs.com/package/@haseebeqx/pi-safari">
-    <img src="https://img.shields.io/npm/dm/@haseebeqx/pi-safari.svg" alt="npm downloads" height="20">
-  </a>
-  <a href="https://www.npmjs.com/package/@haseebeqx/pi-safari">
-    <img src="https://img.shields.io/badge/npm-%40haseebeqx%2Fpi--safari-cb3837" alt="npm package" height="20">
-  </a>
-</p>
 
 **Safari browser automation and web browsing tools for [Pi](https://github.com/badlogic/pi-mono), the AI coding agent.**
 
